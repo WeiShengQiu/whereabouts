@@ -179,6 +179,8 @@ export interface PlanView {
   evidence: EvidenceBundle | null
   /** 同一批地点的地图定位证据，指南图文卡与导出 HTML 共用 */
   geo: GeoBundle | null
+  /** 生成时消费的小红书实采线索快照，历史规划可复现 */
+  research: ResearchBundle | null
   createdAt: string
 }
 
@@ -313,3 +315,78 @@ export const evidenceInputSchema = z.object({
   origin: z.enum(['dataset', 'manual', 'import']).optional().default('manual'),
 })
 export type EvidenceInput = z.infer<typeof evidenceInputSchema>
+
+// ── 小红书实采研究线索 ──────────────────────────────────────────────
+// 与「口碑评分证据」严格分离：这里是用户在自己浏览器用扩展采集的笔记线索，
+// 只携带标题/作者/摘要/互动数/链接，无评分；注入模型时明确标注来源与免责声明。
+
+/** 四类旅行信息，与小红书检索方向一一对应 */
+export const RESEARCH_CATEGORIES = ['hotel', 'transport', 'food', 'attraction'] as const
+export type ResearchCategory = (typeof RESEARCH_CATEGORIES)[number]
+
+export const RESEARCH_CATEGORY_LABELS: Record<ResearchCategory, string> = {
+  hotel: '酒店住宿',
+  transport: '交通出行',
+  food: '饮食美食',
+  attraction: '景点玩乐',
+}
+
+/** 一条分类检索词（模型按需求生成，用户可点深链去小红书搜） */
+export const researchQuerySchema = z.object({
+  category: z.enum(RESEARCH_CATEGORIES),
+  keyword: z.string().trim().min(1).max(80),
+})
+export type ResearchQuery = z.infer<typeof researchQuerySchema>
+
+export const researchQueriesSchema = z.object({
+  queries: z.array(researchQuerySchema).min(1).max(20),
+})
+
+/** 一条实采笔记线索（来自扩展导出的 JSON，经白名单与凭证校验） */
+export const researchItemSchema = z.object({
+  id: z.string().default(''),
+  category: z.enum(RESEARCH_CATEGORIES),
+  keyword: z.string().trim().max(80).default(''),
+  title: z.string().trim().max(200).default(''),
+  author: z.string().trim().max(80).default(''),
+  summary: z.string().trim().max(500).default(''),
+  likes: z.number().int().min(0).nullable().default(null),
+  url: z.string().trim().max(600),
+  collectedAt: z.string().max(40).default(''),
+})
+export type ResearchItem = z.infer<typeof researchItemSchema>
+
+/** 导入扩展 JSON 的请求体：带登录凭证，未登录/未装扩展的采集一律拒绝 */
+export const researchImportSchema = z.object({
+  category: z.enum(RESEARCH_CATEGORIES),
+  keyword: z.string().trim().max(80).default(''),
+  payload: z.object({
+    schemaVersion: z.number().optional(),
+    app: z.string().optional(),
+    loginChecked: z.boolean().optional().default(false),
+    loggedIn: z.boolean().optional().default(false),
+    extensionVersion: z.string().optional().default(''),
+    collectedAt: z.string().optional().default(''),
+    items: z.array(z.object({
+      title: z.string().optional().default(''),
+      author: z.string().optional().default(''),
+      likes: z.number().nullable().optional().default(null),
+      summary: z.string().optional().default(''),
+      link: z.string().optional().default(''),
+    })),
+  }),
+})
+export type ResearchImport = z.infer<typeof researchImportSchema>
+
+export interface ResearchBundle {
+  items: ResearchItem[]
+  collectedAt: string
+}
+
+/** 平台页检测扩展安装：扩展注入的全局标记 */
+export interface XhsCollectorStatus {
+  installed: boolean
+  version: string
+  /** 扩展上报的最近一次小红书登录态（可能为 null：扩展未采集过） */
+  lastLoginState: boolean | null
+}

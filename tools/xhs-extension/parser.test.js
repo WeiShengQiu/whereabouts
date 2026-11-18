@@ -140,6 +140,35 @@ check('stateFallback：__NEXT_DATA__ 不含 marker 时不误判（v1.1 修复）
   assert.deepEqual(items, [])
 })
 
+check('detectLogin：识别已登录（用户头像入口）', () => {
+  const doc = {
+    querySelector: (s) => (s.includes('user-info') ? el({}, ['我']) : null),
+    querySelectorAll: () => [],
+  }
+  assert.equal(P.detectLogin(doc), true)
+})
+
+check('detectLogin：识别未登录（登录按钮）', () => {
+  const doc = {
+    querySelector: () => null,
+    querySelectorAll: (s) => (s === 'button' ? [el({}, ['登录'])] : []),
+  }
+  assert.equal(P.detectLogin(doc), false)
+})
+
+check('collect：导出包带登录凭证（未登录时 loggedIn=false）', () => {
+  const doc = {
+    location: { pathname: '/search_result', href: 'https://www.xiaohongshu.com/search_result' },
+    querySelector: () => null,
+    querySelectorAll: (s) => (s === 'button' ? [el({}, ['登录'])] : []),
+  }
+  const payload = P.collect(doc)
+  assert.equal(payload.loginChecked, true)
+  assert.equal(payload.loggedIn, false)
+  assert.ok(payload.extensionVersion)
+  assert.ok(payload.notice.includes('尚未登录'))
+})
+
 check('dedupe：按链接去重', () => {
   const out = P.dedupe([
     { title: 'a', link: 'https://www.xiaohongshu.com/explore/1' },

@@ -6,10 +6,12 @@ import type { GenerationEvent, GuideDay, GuideSpot, PlanOption, TravelGuide } fr
 
 export type GenerationEmit = (event: Omit<GenerationEvent, 'elapsedMs'>) => void
 
-/** 指南生成所需的只读外部证据：口碑评分与地图定位均由系统取证，模型只负责归纳 */
+/** 指南生成所需的只读外部证据：口碑评分、地图定位与用户实采线索均由系统注入，模型只负责归纳 */
 export interface GuideContext {
   evidence?: string
   geo?: string
+  /** 用户在小红书实采的线索（非评分），仅作地点/店名/玩法参考 */
+  research?: string
   /** 需要生成图文卡的地点名，来自第一阶段的 places */
   places?: string[]
 }
@@ -102,6 +104,7 @@ export async function generateOptions(
   requirement: string,
   model: string,
   emit: GenerationEmit,
+  research = '',
 ): Promise<{ options: PlanOption[]; places: string[]; city: string }> {
   emit({ type: 'stage', stage: 'options', message: '正在连接模型服务，生成 3 个定制方案', current: 0, total: 1 })
   const { value, attempts } = await chatStructured(
@@ -110,7 +113,10 @@ export async function generateOptions(
       model,
       messages: [
         { role: 'system', content: OPTIONS_SYSTEM },
-        { role: 'user', content: `我的旅行需求：${requirement}` },
+        {
+          role: 'user',
+          content: `我的旅行需求：${requirement}${research ? `\n\n${research}\n\n参考以上用户实采线索规划方案：可采纳其中的地点与玩法，但不得编造评分，也不要虚构未列出的店名；线索仅作参考，具体营业与票价请提示我自行核实。` : ''}`,
+        },
       ],
       temperature: 0.7,
       maxTokens: 2000,
@@ -158,7 +164,7 @@ export async function generateGuide(
         { role: 'system', content: GUIDE_META_SYSTEM },
         {
           role: 'user',
-          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.evidence ? `\n\n${context.evidence}` : ''}${context.geo ? `\n\n${context.geo}` : ''}`,
+          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.research ? `\n\n${context.research}` : ''}${context.evidence ? `\n\n${context.evidence}` : ''}${context.geo ? `\n\n${context.geo}` : ''}`,
         },
       ],
       temperature: 0.7,
@@ -192,6 +198,9 @@ export async function generateGuide(
               `本次只生成第 ${batch.from} 天到第 ${batch.to} 天，共 ${batch.to - batch.from + 1} 天。` +
               `可安排的地点：${places.join('、') || '按需求自行安排'}。` +
               (days.length ? `\n已生成的前序行程主题：${days.map((d) => `${d.day} ${d.title}`).join('；')}，请保持连贯且避免重复。` : '') +
+              (context.research
+                ? '\n\n【用户实采线索参考】可采纳线索里的具体店名、街区与玩法让行程更真实，但点赞数是热度不是评分，禁止写「评分高/口碑好」；不得虚构未列出的店名，票价与营业时间提示用户回源核实。'
+                : '') +
               (context.evidence
                 ? '\n\n【口碑数据约束】每日行程里只能引用证据中给出的评分与来源，禁止编造评分、星级或「网友评价」；无数据的地点不要写任何口碑描述。'
                 : '') +
@@ -245,6 +254,7 @@ export async function generateGuide(
               `本次只为以下 ${batch.length} 个地点撰写图文卡，每个恰好 1 条，顺序与名称保持一致：\n` +
               batch.map((name, i) => `${i + 1}. ${name}`).join('\n') +
               (context.geo ? `\n\n${context.geo}` : '') +
+              (context.research ? '\n\n【用户实采线索】可参考线索里的地点描述，但不得写评分、星级或把点赞数当口碑；位置细节只引用地图定位数据。' : '') +
               (context.evidence ? '\n\n【口碑数据约束】禁止编造评分、星级与「网友评价」；图册里不写口碑分数。' : ''),
           },
         ],

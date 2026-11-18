@@ -4,6 +4,7 @@ import type { GenerationEvent } from '../../../shared/types'
 const STAGE_LABELS: Record<string, string> = {
   prepare: '准备',
   options: '候选方案',
+  research: '实采线索',
   evidence: '口碑取证',
   geo: '地图定位',
   guide_meta: '指南概览',

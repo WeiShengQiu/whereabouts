@@ -60,8 +60,20 @@ const refs = [
 ].filter(Boolean)
 for (const ref of refs) ok('引用文件存在：' + ref, exists(ref))
 
+// 3b. 平台页注入块（供平台检测「扩展已安装」）
+const bridgeBlock = (manifest.content_scripts || []).find((c) => (c.js || []).includes('bridge.js'))
+ok('存在平台页注入块(bridge.js，供安装检测)', !!bridgeBlock)
+if (bridgeBlock) {
+  ok('平台注入块含 localhost/线上 IP 匹配',
+    bridgeBlock.matches.some((m) => m.includes('localhost')) &&
+    bridgeBlock.matches.some((m) => m.includes('150.158.179.138')),
+    JSON.stringify(bridgeBlock.matches))
+}
+ok('已声明 storage 权限(共享登录态)',
+  Array.isArray(manifest.permissions) && manifest.permissions.includes('storage'))
+
 // 4. 所有 JS 语法正确
-for (const f of ['parser.js', 'content.js', 'popup.js', 'background.js']) {
+for (const f of ['parser.js', 'content.js', 'popup.js', 'background.js', 'bridge.js']) {
   if (!exists(f)) continue
   try {
     execFileSync(process.execPath, ['--check', path.join(dir, f)], { stdio: 'pipe' })
@@ -79,8 +91,27 @@ try {
   const mj = read('manifest.json')
   ok('已声明 scripting + tabs 权限',
     mj.includes('"scripting"') && mj.includes('"tabs"'))
+  // 登录门禁：未登录不允许采集/导出
+  ok('popup 采集后强制校验登录态',
+    pj.includes('loggedIn') && pj.includes('loginChecked') && pj.includes('chrome.storage.local.set'))
 } catch (e) {
   ok('popup.js / manifest 可读', false, e.message)
+}
+
+// 6. 解析器登录检测与导出凭证
+try {
+  const pj = read('parser.js')
+  ok('parser 提供 detectLogin（只读 DOM 判断登录）', pj.includes('function detectLogin'))
+  ok('导出包带登录凭证 loginChecked/loggedIn',
+    pj.includes('loginChecked:') && pj.includes('loggedIn:'))
+} catch (e) {
+  ok('parser.js 可读', false, e.message)
+}
+try {
+  const bj = read('bridge.js')
+  ok('bridge 暴露 window.__XHS_COLLECTOR__ 安装标记', bj.includes('__XHS_COLLECTOR__'))
+} catch (e) {
+  ok('bridge.js 可读', false, e.message)
 }
 
 console.log('\n' + (failed ? `自检未通过：${failed} 项` : '自检全部通过，可在浏览器加载 tools/xhs-extension/ 目录'))

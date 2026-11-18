@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, downloadUrl, errorMessage, GenerationError } from '../api'
 import GenerationPanel from '../components/GenerationPanel'
 import EvidenceMatrix from '../components/EvidenceMatrix'
+import ResearchPanel from '../components/ResearchPanel'
 import {
   fallbackGeoPoi,
   matchGeoPoi,
@@ -34,6 +35,7 @@ export default function PlannerPage() {
   const [error, setError] = useState('')
   const [run, setRun] = useState<RunState>(EMPTY_RUN)
   const [failure, setFailure] = useState<{ message: string; detail?: string } | null>(null)
+  const [researchCount, setResearchCount] = useState(0)
 
   const loadModels = async (id: string, defaultModel: string) => {
     try {
@@ -150,7 +152,9 @@ export default function PlannerPage() {
     }
   }
 
-  const step = !plan ? 1 : plan.selectedIndex === null ? 2 : !plan.guide ? 3 : 4
+  // 实采是可选步骤：真实阶段 1需求/2挑选/3指南/4导出 映射到 5 格步骤条（实采恒为可做）
+  const realStep = !plan ? 1 : plan.selectedIndex === null ? 2 : !plan.guide ? 3 : 4
+  const step = realStep + (realStep >= 2 ? 1 : 0)
   // 历史指南没有 spots 字段，前端按缺省空数组处理
   const spots = plan?.guide?.spots ?? []
 
@@ -203,15 +207,25 @@ export default function PlannerPage() {
         <button className="btn primary" onClick={() => void createOptions()} disabled={busy !== null}>
           {busy === 'options' ? '正在生成候选方案…' : '生成定制方案'}
         </button>
+        {researchCount > 0 && (
+          <p className="hint">本次将结合你采集的 {researchCount} 条小红书线索生成方案（仅作地点与玩法参考）。</p>
+        )}
         {error && run.events.length === 0 && <div className="error">{error}</div>}
       </div>
+
+      <ResearchPanel
+        requirement={requirement}
+        configId={configId}
+        model={model}
+        onCountChange={setResearchCount}
+      />
 
       {(run.active || run.events.length > 0) && (
         <GenerationPanel events={run.events} active={run.active} startedAt={run.startedAt} failure={failure} />
       )}
 
       <div className="steps">
-        {['描述需求', '挑选方案', '生成指南', '导出 HTML'].map((label, index) => (
+        {['描述需求', '小红书实采(可选)', '挑选方案', '生成指南', '导出 HTML'].map((label, index) => (
           <span className={step === index + 1 ? 'on' : step > index + 1 ? 'passed' : ''} key={label}>
             <b>0{index + 1}</b>{label}
           </span>

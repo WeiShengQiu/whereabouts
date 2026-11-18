@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "行迹 · 小红书线索采集",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "在你已登录的小红书页面读取当前可见的笔记标题、作者、互动数与链接，导出为 JSON 供行迹平台导入。只读页面 DOM，不发送任何网络请求，不读取 Cookie，不绕过风控。",
-  "permissions": ["activeTab", "scripting", "tabs"],
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
   "host_permissions": ["https://www.xiaohongshu.com/*"],
   "background": { "service_worker": "background.js" },
   "action": {
@@ -14,6 +14,16 @@
     {
       "matches": ["https://www.xiaohongshu.com/*"],
       "js": ["parser.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://150.158.179.138/*"
+      ],
+      "js": ["bridge.js"],
       "run_at": "document_idle",
       "all_frames": false
     }

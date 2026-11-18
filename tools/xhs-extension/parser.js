@@ -16,6 +16,8 @@
   'use strict'
 
   const SCHEMA_VERSION = 1
+  // 与 manifest.json 的 version 保持一致；导出凭证里带上，便于平台识别版本
+  const EXT_VERSION = '1.2.0'
 
   function text(el) {
     return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : ''
@@ -254,9 +256,52 @@
     })
   }
 
-  /** 主入口：返回符合行迹导入 schema 的导出包 */
+  /**
+   * 检测小红书登录态：只读当前页面 DOM，不读 Cookie。
+   * 依据：已登录时页面有用户头像/昵称入口；未登录时有「登录」按钮或登录弹层。
+   * 返回 true / false / null（无法判断）。
+   */
+  function detectLogin(doc) {
+    const loggedInSelectors = [
+      '.user-info', '.user .name', '.reds-avatar', '.side-bar .user',
+      '[class*="user-info"]', '[class*="avatar-item"]', '.channel-user-info',
+      'a[href*="/user/profile/"]',
+    ]
+    for (const sel of loggedInSelectors) {
+      try {
+        const el = doc.querySelector(sel)
+        if (el && text(el)) return true
+      } catch (_) { /* 忽略不支持的选择器 */ }
+    }
+    // 从 __INITIAL_STATE__ 判断（若版本保留 user 信息）
+    try {
+      const scripts = doc.querySelectorAll ? Array.from(doc.querySelectorAll('script')) : []
+      for (const s of scripts) {
+        const t = s.textContent || ''
+        if (t.indexOf('__INITIAL_STATE__') === -1) continue
+        if (/"user"[^}]{0,200}"(nickname|nickName|userId|redId)"/.test(t)) return true
+      }
+    } catch (_) { /* ignore */ }
+    const loginPrompts = ['登录', 'Log in', 'Sign in']
+    const btnSelectors = ['.login-btn', '[class*="login-btn"]', 'button', '[role="button"]']
+    let hasLoginButton = false
+    for (const sel of btnSelectors) {
+      try {
+        for (const el of Array.from(doc.querySelectorAll(sel)).slice(0, 40)) {
+          const t = text(el)
+          if (t && t.length <= 12 && loginPrompts.some((p) => t.includes(p))) { hasLoginButton = true; break }
+        }
+      } catch (_) { /* ignore */ }
+      if (hasLoginButton) return false
+    }
+    // DOCTYPE/空壳页无法判断
+    return null
+  }
+
+  /** 主入口：返回符合行迹导入 schema 的导出包（带登录凭证） */
   function collect(doc) {
     const pageType = detectPageType(doc)
+    const loginState = detectLogin(doc)
     let items = []
     if (pageType === 'search') items = parseSearchPage(doc)
     else if (pageType === 'note') items = parseNotePage(doc)
@@ -268,17 +313,25 @@
       pageType,
       collectedAt: new Date().toISOString(),
       pageUrl: (doc.location && doc.location.href) || '',
+      // 登录凭证：只有明确检测到已登录才置 true，平台据此做硬门禁
+      loginChecked: loginState !== null,
+      loggedIn: loginState === true,
+      extensionVersion: EXT_VERSION,
       count: items.length,
       items,
       notice: items.length
         ? '数据来自你当前浏览器已登录页面可见内容，仅作人工核对线索，不产生评分。'
-        : '未识别到笔记数据。请确认已登录小红书且页面已加载出笔记，再重试。',
+        : loginState === false
+          ? '检测到你尚未登录小红书，请先登录再采集。'
+          : '未识别到笔记数据。请确认已登录小红书且页面已加载出笔记，再重试。',
     }
   }
 
   return {
     SCHEMA_VERSION,
+    EXT_VERSION,
     detectPageType,
+    detectLogin,
     parseSearchPage,
     parseNotePage,
     stateFallback,

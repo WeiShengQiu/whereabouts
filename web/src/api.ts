@@ -10,6 +10,9 @@ import type {
   LLMConfigView,
   ModelInfo,
   PlanView,
+  ResearchCategory,
+  ResearchItem,
+  ResearchQuery,
   SessionView,
   SourceStatus,
   UserView,
@@ -148,6 +151,15 @@ export const api = {
   xhsNotesStatus: () => request<XhsChannelStatus>('/evidence/xhs/status'),
   xhsNotesSearch: (keyword: string, limit: number) =>
     request<XhsSearchResult>(`/evidence/xhs/search?keyword=${encodeURIComponent(keyword)}&limit=${limit}`),
+
+  // 小红书实采研究
+  researchQueries: (requirement: string, configId: string, model: string) =>
+    post<{ queries: ResearchQuery[]; source: 'model' | 'rule' }>('/xhs-research/queries', { requirement, configId, model }),
+  research: () => request<ResearchItem[]>('/xhs-research'),
+  importResearch: (category: ResearchCategory, keyword: string, payload: unknown) =>
+    post<{ imported: number; skipped: number; reason?: string }>('/xhs-research/import', { category, keyword, payload }),
+  deleteResearch: (id: string) => request<{ deleted: boolean }>(`/xhs-research/${id}`, { method: 'DELETE' }),
+  clearResearch: () => request<{ deleted: number }>('/xhs-research', { method: 'DELETE' }),
 }
 
 export const downloadUrl = (id: string): string => `/api/files/${id}/download`

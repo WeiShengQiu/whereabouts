@@ -98,8 +98,12 @@ npm run dev            # 一条命令同时启动 API(8888) 与 Vite(5173)
 | GET | `/api/evidence/matrix?pois=a,b` | 只读对比矩阵，不触发外部请求 |
 | GET | `/api/evidence/xhs/status` | 独立笔记检索通道状态（只查本机 /health） |
 | GET | `/api/evidence/xhs/search?keyword=&limit=` | 关键词检索笔记；未启用/熔断时返回官方搜索深链 |
+| POST | `/api/xhs-research/queries` | 需求拆四类小红书检索词（实采工作流） |
+| GET | `/api/xhs-research` | 实采线索列表 |
+| POST | `/api/xhs-research/import` | 导入扩展采集 JSON（强制登录凭证） |
+| DELETE | `/api/xhs-research` `/api/xhs-research/:id` | 清空 / 删除单条实采线索 |
 
-数据表：`users` / `sessions` / `llm_configs` / `plans`（含 `evidence_json`、`geo_json`）/ `generated_files` / `login_attempts` / `evidence_items`。
+数据表：`users` / `sessions` / `llm_configs` / `plans`（含 `evidence_json`、`geo_json`、`research_json`）/ `generated_files` / `login_attempts` / `evidence_items` / `xhs_research`。
 
 ## 第三方口碑证据层
 
@@ -188,9 +192,12 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
 - `parser.js`：页面解析器（纯函数），多选择器兜底 + `__INITIAL_STATE__` 兜底，输出固定 schema；同时支持浏览器与 Node，便于单测。
 - `content.js` / `popup.html` / `popup.js`：popup 采集时通过 `chrome.scripting.executeScript` **主动注入 parser 并调用**，因此「刚装完/刚更新、页面早已打开」也能一次成功，不依赖安装前注入的常驻脚本；提供复制 / 下载 JSON。
 - `background.js`：MV3 service worker，仅安装提示与扩展自检，无采集/网络逻辑。
-- `parser.test.js`：Node 内置断言单测，覆盖计数转换、域名白名单、页面识别、字段提取、去重。
+- `bridge.js`：注入平台页，暴露 `window.__XHS_COLLECTOR__`（安装标记、版本、最近登录态）供平台「检查项」读取。
+- `parser.test.js`：Node 内置断言单测，覆盖计数转换、域名白名单、页面识别、字段提取、去重、登录检测、导出凭证。
 
 **v1.1 修复**：早期版本的 `content.js` 依赖 `window.XhsParser`，但 manifest 未注入 `parser.js`，导致采集必然失败；且常驻 content script 在「扩展安装前已打开的标签页」里不存在。现改为 manifest 正确注入 + popup 主动注入双保险。
+
+**v1.2 登录门禁**：扩展采集前只读页面 DOM 判断小红书登录态（用户头像入口 / 登录按钮 / `INITIAL_STATE.user`），未登录直接拒绝采集、不生成凭证；导出 JSON 带 `loginChecked` / `loggedIn` / `extensionVersion` 凭证，平台后端二次硬校验，无已登录凭证的导入一律 403。`bridge.js` 把最近登录态经 `chrome.storage` 同步到平台页显示。
 
 **安全边界**：只读用户浏览器**当前已渲染**的 DOM；不主动发任何网络请求、不读 Cookie、不模拟登录、不绕过风控、不批量轮询；链接只放行 `xiaohongshu.com` 官方域名。导入侧同样做域名白名单校验。
 
@@ -203,7 +210,7 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
    - 如果是「请先在浏览器中打开小红书…」：当前标签页 URL 不是 `www.xiaohongshu.com`，先切到小红书页面。
 4. 复制或下载 JSON，回到平台「口碑数据」页 →「导入浏览器采集数据」，粘贴/上传后确认导入。
 
-**落地口径**：导入内容与「存为线索」同构——只留标题、作者、摘要与链接（`origin=import`、`source=xiaohongshu`、无评分），**不注入模型提示词、不写入导出的指南**。扩展采到的正文/图片只用于用户自己核对；是否以及如何对外使用采集内容，由用户自行判断是否符合平台条款与版权要求。浏览器官方商店分发需另行注册开发者账号并审核，本仓库提供的是可自托管的源码。
+**落地口径**：通过「口碑数据」页的「导入浏览器采集数据」导入时，内容与「存为线索」同构——只留标题、作者、摘要与链接（`origin=import`、`source=xiaohongshu`、无评分），仅作人工核对，不参与指南生成。若希望这些笔记真正影响行程输出，请走下一节的**实采研究工作流**：它会带上登录凭证、按酒店/交通/饮食/景点四类归档，并明确标注为「用户实采、非评分」后注入模型。是否以及如何对外使用采集内容，由用户自行判断是否符合平台条款与版权要求。浏览器官方商店分发需另行注册开发者账号并审核，本仓库提供的是可自托管的源码。
 
 **加载前自检**（无需浏览器，确认扩展文件完整）：
 
@@ -213,7 +220,35 @@ node tools/xhs-extension/check.mjs
 
 它会校验 manifest 合法、manifest 引用的每个文件都存在、所有 JS 语法正确、`parser.js` 确实在注入列表里——如果这里报错，浏览器加载一定失败。
 
-单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖，6 项断言）。端到端（可选，需本机 Chrome + Playwright）：在临时目录 `npm i playwright-core` 后用 CDP 加载扩展目录，在模拟小红书 DOM 上验证采集链路。
+单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖，11 项断言）。端到端（可选，需本机 Chrome + Playwright）：在临时目录 `npm i playwright-core` 后用 CDP 加载扩展目录，在模拟小红书 DOM 上验证采集链路。
+
+## 小红书实采研究（需求 → 检索 → 采集 → 注入模型）
+
+这是把小红书数据**真正接进行程生成**的工作流，与上一节"人工核对线索"、口碑评分证据层三者相互独立：
+
+**完整流程**（规划页 cards 顺序）：
+
+1. **描述需求**：填旅行需求、选模型。
+2. **小红书实采（可选）**：
+   - **检查项**：平台页读取扩展注入的 `window.__XHS_COLLECTOR__`，显示「扩展已安装 / 小红书已登录」。未装扩展时给出加载指引；登录态在采集后经扩展共享存储同步更新。
+   - **生成检索词**：把需求交给模型拆成**酒店住宿 / 交通出行 / 饮食美食 / 景点玩乐**四类关键词（模型不可用则自动降级为含目的地 City 的通用词，流程不断）。每类关键词是一键打开小红书搜索的官方深链。
+   - **采集**：点深链打开小红书 → 确认已登录 → 用扩展「采集当前页」→ 复制 JSON。**扩展侧强制登录门禁**：未登录不采集、不出凭证。
+   - **导入**：回到平台选分类、粘贴 JSON → 后端校验 `loginChecked && loggedIn` 凭证 + 链接域名白名单 + 按 URL 去重 → 落库 `xhs_research`。
+3. **生成方案 / 指南**：`createPlan` 与 `buildGuide` 读取该用户实采线索快照（`researchPrompt`），明确标注「用户实采、非评分、点赞只是热度、开放时间票价需回源核实」后注入模型；SSE 增加 `research` 阶段实时事件。线索快照写入 `plans.research_json`，历史规划可复现，不受之后增删线索影响。
+
+**数据边界**：实采线索只有标题/作者/摘要/点赞数/链接，**没有评分**；模型只把它们当目的地、店名、街区、玩法与避坑参考，不得据此写"评分高/口碑好"，不得虚构未列出的店名，票价与营业时间一律提示回源核实。与 `evidence_items`（评分证据）分表存储，互不污染。
+
+**相关表 / 接口**：`xhs_research`（唯一索引 `user_id + url`）；`plans.research_json`（迁移自动补列）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/xhs-research/queries` | 需求拆四类检索词（模型 + 规则兜底） |
+| GET | `/api/xhs-research` | 当前用户实采线索列表 |
+| POST | `/api/xhs-research/import` | 导入扩展 JSON（强制登录凭证，未登录 403） |
+| DELETE | `/api/xhs-research/:id` | 删除单条线索 |
+| DELETE | `/api/xhs-research` | 清空全部线索 |
+
+**验证**：`npm run build`；后端冒烟 8 项（检索词兜底、登录门禁、白名单、去重、提示词免责、CRUD）；HTTP 层 9 项（含真实百炼生成并校验 `plan.research` 快照落库）；扩展单测 11 项 + 加载前自检。
 
 ## 地图定位与图文指南
 
@@ -431,7 +466,8 @@ web-dist/
 - 未接入任何官方评分 API（暂无凭据）。代码提供的是标准 provider 接口、条款声明、状态机与降级链路；拿到授权后由合规网关把各家响应归一化即可启用，不需要改业务代码。官方源数据按条款不落库，每次生成会重新取证。
 - 地图精确模式默认关闭（暂无高德 / Google Key）。零密钥下只有官方深链与自绘示意图，不含真实坐标与地图截图；配置 Key 并开启 `GEO_STATIC_MAP=1` 后才会出现官方静态地图。景点照片不在接入范围内（反爬与版权），如需照片请自行接入有授权的开放图库。
 - 小红书笔记检索是独立、默认关闭的研究通道：未启用时只给官方搜索入口；上游为逆向签名项目，自述仅供学习、无 LICENSE，其代码与凭据不进发布包，也不会自动参与指南生成。详见「小红书笔记检索」章节。
-- 小红书浏览器采集扩展为用户侧工具：只读用户自己浏览器已渲染的 DOM，不代抓；小红书 DOM 改版会导致选择器失效，需更新 `parser.js` 的选择器（已做多选择器 + 初始状态兜底）。官方「快捷搜索插件」不提供数据接口，未采用。导入数据仅作线索，不评分、不进指南。
+- 小红书浏览器采集扩展为用户侧工具：只读用户自己浏览器已渲染的 DOM，不代抓；小红书 DOM 改版会导致选择器失效，需更新 `parser.js` 的选择器（已做多选择器 + 初始状态兜底）。官方「快捷搜索插件」不提供数据接口，未采用。扩展带登录门禁（未登录不采集、不出凭证），后端二次校验。
+- 实采工作流注入的是**非评分线索**：模型只参考地点/店名/玩法，不产生评分；登录检测基于页面 DOM 特征（用户头像/登录按钮），小红书改版或反爬可能让检测失效，此时扩展会给出"无法确认登录状态"而不出凭证，需更新 `detectLogin` 的选择器。登录态凭证可由用户自行伪造 JSON 绕过，本方案定位为「提醒用户自觉登录、并阻止误采」而非身份鉴权，正式对外需走平台授权接口。
 - 微信登录未实现，仅预留 provider 与回调接入点。
 - 邮箱注册无验证码，仅限开发/小范围试用。
 - 模型响应非流式（有 SSE 阶段进度）、单机会话存储、无并发渲染队列。

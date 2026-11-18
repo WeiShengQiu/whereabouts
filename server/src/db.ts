@@ -97,11 +97,29 @@ CREATE TABLE IF NOT EXISTS evidence_items (
   fetched_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_user_poi ON evidence_items(user_id, poi_key);
+
+-- 小红书实采研究线索：用户在自己浏览器用扩展采集、主动导入的分类笔记线索，
+-- 只携带标题/摘要/互动数/链接，无评分。与 evidence_items（评分证据）严格分离。
+CREATE TABLE IF NOT EXISTS xhs_research (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category      TEXT NOT NULL,
+  keyword       TEXT NOT NULL DEFAULT '',
+  title         TEXT NOT NULL DEFAULT '',
+  author        TEXT NOT NULL DEFAULT '',
+  summary       TEXT NOT NULL DEFAULT '',
+  likes         INTEGER,
+  url           TEXT NOT NULL,
+  collected_at  TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_xhs_research_user ON xhs_research(user_id, category);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_xhs_research_url ON xhs_research(user_id, url);
 `)
 
 // 旧库补列：CREATE TABLE IF NOT EXISTS 不会改已有表，逐列补齐
 const planColumns = db.prepare('PRAGMA table_info(plans)').all() as Array<{ name: string }>
-for (const column of ['evidence_json', 'geo_json']) {
+for (const column of ['evidence_json', 'geo_json', 'research_json']) {
   if (!planColumns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE plans ADD COLUMN ${column} TEXT`)
   }

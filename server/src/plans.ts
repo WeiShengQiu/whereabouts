@@ -10,7 +10,8 @@ import { renderGuideHtml } from './html'
 import { newId } from './crypto'
 import { collectEvidence, evidencePrompt } from './evidence'
 import { collectGeo, geoPrompt, withStaticImages } from './geo'
-import type { ApiResult, EvidenceBundle, FileView, GenerationEvent, GeoBundle, PlanOption, PlanView, TravelGuide } from '../../shared/types'
+import { researchBundle, researchPrompt } from './xhs-research'
+import type { ApiResult, EvidenceBundle, FileView, GenerationEvent, GeoBundle, PlanOption, PlanView, ResearchBundle, TravelGuide } from '../../shared/types'
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>
 const wrap = (fn: AsyncHandler) => (req: Request, res: Response, next: NextFunction): void => {
@@ -28,6 +29,7 @@ interface PlanRow {
   guide_json: string | null
   evidence_json: string | null
   geo_json: string | null
+  research_json: string | null
   created_at: string
 }
 
@@ -61,6 +63,7 @@ function toPlanView(row: PlanRow): PlanView {
     guide: row.guide_json ? (JSON.parse(row.guide_json) as TravelGuide) : null,
     evidence: row.evidence_json ? (JSON.parse(row.evidence_json) as EvidenceBundle) : null,
     geo: row.geo_json ? (JSON.parse(row.geo_json) as GeoBundle) : null,
+    research: row.research_json ? (JSON.parse(row.research_json) as ResearchBundle) : null,
     createdAt: row.created_at,
   }
 }
@@ -103,12 +106,21 @@ async function createPlanWithOptions(
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, userId, sessionId, input.requirement, configId, model, new Date().toISOString())
   try {
-    const { options, places, city } = await generateOptions(config, input.requirement, model, emit)
+    // 用户实采的小红书线索：生成方案前读取快照并注入，让方案贴近真实笔记里的地点与玩法
+    const research = researchBundle(userId)
+    if (research.items.length) {
+      emit({
+        type: 'stage', stage: 'research',
+        message: `正在结合你采集的 ${research.items.length} 条小红书线索生成方案（线索仅作参考，非评分）`,
+        current: 0, total: 1,
+      })
+    }
+    const { options, places, city } = await generateOptions(config, input.requirement, model, emit, researchPrompt(research))
     // 方案里的具体地点同时交给口碑证据层与地图定位层；一份数据贯穿指南生成、页面预览与 HTML 导出
     const bundle = await collectEvidence(userId, places, city, emit)
     const geo = await collectGeo(places, city, emit)
-    db.prepare('UPDATE plans SET options_json = ?, evidence_json = ?, geo_json = ? WHERE id = ?')
-      .run(JSON.stringify(options), JSON.stringify(bundle), JSON.stringify(geo), id)
+    db.prepare('UPDATE plans SET options_json = ?, evidence_json = ?, geo_json = ?, research_json = ? WHERE id = ?')
+      .run(JSON.stringify(options), JSON.stringify(bundle), JSON.stringify(geo), JSON.stringify(research), id)
     return toPlanView(loadPlan(userId, id)!)
   } catch (error) {
     // 生成失败不留下空记录，避免历史里出现无法继续的半成品
@@ -127,9 +139,19 @@ async function buildGuide(userId: string, planId: string, emit: GenerationEmit):
   const selected = options[plan.selected_index]
   const bundle = plan.evidence_json ? (JSON.parse(plan.evidence_json) as EvidenceBundle) : null
   const geo = plan.geo_json ? (JSON.parse(plan.geo_json) as GeoBundle) : null
+  // 用规划生成时的线索快照，历史记录可复现，不受之后新增/删除线索影响
+  const research = plan.research_json ? (JSON.parse(plan.research_json) as ResearchBundle) : null
+  if (research?.items.length) {
+    emit({
+      type: 'stage', stage: 'research',
+      message: `正在结合 ${research.items.length} 条小红书实采线索优化指南（参考地点与玩法，不生成评分）`,
+      current: 0, total: 1,
+    })
+  }
   const guide = await generateGuide(config, plan.requirement, selected, plan.model, emit, {
     evidence: evidencePrompt(bundle),
     geo: geoPrompt(geo),
+    research: researchPrompt(research),
     places: geo?.pois.map((poi) => poi.name) ?? [],
   })
   db.prepare('UPDATE plans SET guide_json = ? WHERE id = ?').run(JSON.stringify(guide), plan.id)

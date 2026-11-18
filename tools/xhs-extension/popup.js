@@ -69,8 +69,29 @@
         return
       }
       const data = await collectInTab(tab.id)
+
+      // 硬门禁：未登录小红书不允许采集/导出（后端也会再次校验凭证，双保险）
+      await chrome.storage.local.set({
+        xhsLastLoginState: data.loggedIn,
+        xhsLastCheckedAt: data.collectedAt,
+      })
+      if (data.loggedIn === false) {
+        lastPayload = null
+        setStatus('检测到你尚未登录小红书。请先在小红书页面登录，再回来采集（未登录不生成凭证）。', 'err')
+        copyBtn.disabled = true
+        downloadBtn.disabled = true
+        return
+      }
+      if (!data.loginChecked) {
+        lastPayload = null
+        setStatus('无法确认登录状态（页面可能未加载完成）。请刷新小红书页面、确认已登录后重试。', 'err')
+        copyBtn.disabled = true
+        downloadBtn.disabled = true
+        return
+      }
+
       lastPayload = data
-      setStatus(data.count ? ('已采集 ' + data.count + ' 条笔记。' + data.notice) : data.notice,
+      setStatus(data.count ? ('已采集 ' + data.count + ' 条笔记（登录态已确认）。' + data.notice) : data.notice,
         data.count ? 'ok' : 'err')
       render(data)
       copyBtn.disabled = data.count === 0
