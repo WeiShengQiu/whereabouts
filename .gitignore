@@ -1,0 +1,33 @@
+# ── 密钥与本地配置（绝不提交）──────────────────────────────
+.env
+.env.*
+!.env.example
+tools/xhs-notes/xhs.env
+~/.travel-planner-deploy.env
+
+# ── 运行数据与数据库 ──────────────────────────────────────
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# ── 依赖与构建产物 ────────────────────────────────────────
+node_modules/
+web-dist/
+dist/
+*.tsbuildinfo
+
+# ── 小红书 sidecar 的本地依赖与缓存 ──────────────────────
+tools/xhs-notes/.venv/
+tools/xhs-notes/vendor/
+__pycache__/
+*.pyc
+
+# ── 部署锁、日志、IDE ─────────────────────────────────────
+.deploy-lock-hash
+*.log
+.idea/
+.vscode/
+.DS_Store
+._*
