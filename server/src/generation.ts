@@ -8,7 +8,6 @@ export type GenerationEmit = (event: Omit<GenerationEvent, 'elapsedMs'>) => void
 
 /** 指南生成所需的只读外部证据：口碑评分、地图定位与用户实采线索均由系统注入，模型只负责归纳 */
 export interface GuideContext {
-  evidence?: string
   geo?: string
   /** 用户在小红书实采的线索（非评分），仅作地点/店名/玩法参考 */
   research?: string
@@ -24,30 +23,28 @@ const OPTIONS_SYSTEM = `你是资深旅行规划师。根据用户的需求，�
 const GUIDE_META_SYSTEM = `你是资深旅行规划师。用户已经从候选方案中选定了一个，请生成旅游指南的概览部分。
 只输出一个 JSON 对象，结构为：
 {"title":"指南标题","destination":"目的地","duration":"行程时长","overview":"整体概述","budget":{"level":"预算档位","items":["费用明细"],"total":"合计金额"},"packing":["行前清单"],"notes":["注意事项"]}
-要求：不要包含 days 与 spots 字段；overview 用 150–250 字写清行程主线、节奏与适合人群，不要写套话；budget.items 至少 4 条具体费用项；packing 与 notes 各至少 4 条可执行建议；全部中文；金额使用人民币；不要编造具体的航班号、酒店名称、门票价格、评分或无法核实的地址；若在概述中提及第三方评分，只能引用用户消息提供的口碑数据，禁止编造评分、星级或「网友评价」；不要输出解释文字或 Markdown 围栏。`
+要求：不要包含 days 与 spots 字段；overview 用 80–140 字写清行程主线和节奏，简洁有力、不写套话、不堆形容词；budget.items 给 4–5 条具体费用项（短句即可）；packing 与 notes 各 4–5 条、每条一句话的可执行建议；全部中文；金额使用人民币；不要编造具体航班号、酒店名称、门票价格、评分或无法核实的地址；禁止写任何评分、星级或「网友评价」；不要输出解释文字或 Markdown 围栏。`
 
-const GUIDE_DAYS_SYSTEM = `你是资深旅行规划师。请只生成指定天数的每日行程。
+const GUIDE_DAYS_SYSTEM = `你是资深旅行规划师。请只生成指定天数的每日行程。文字要精简，像一份能照着走的清单，不要长篇大论。
 只输出一个 JSON 对象，结构为：
 {"days":[{"day":"第1天","title":"当日主题","morning":"上午安排","afternoon":"下午安排","evening":"晚上安排","meals":"餐饮建议","transport":"交通建议","tips":"当日贴士"}]}
 要求：
 - days 数组只包含本次指定的天数，数量必须精确；day 字段使用「第N天」。
-- morning / afternoon / evening 每段至少 60 字，必须写清【具体地点名 + 到那里做什么 + 建议节奏与顺序】，不要写「自由活动」「感受当地文化」这类空话。
-- meals 写具体菜品、街区或餐饮类型与推荐时段，不要只写「品尝当地美食」。
-- transport 只做定性建议（打车 / 地铁 / 步行 / 骑行及大致方位），禁止编造线路号、站数、精确时长与票价。
-- tips 写预约、避峰、着装、证件、天气等可执行提醒。
+- morning / afternoon / evening 每段 30–60 字，用【具体地点名 + 做什么 + 顺序节奏】的短句，地点名之间用「→」串联；不要写「自由活动」「感受当地文化」这类空话，不要写满 60 字凑数。
+- meals 一句话写具体菜品/街区/餐饮类型与时段；transport 一句话定性建议（打车 / 地铁 / 步行，不写线路号与票价）；tips 一句话提醒（预约 / 避峰 / 天气）。
+- 若用户消息提供了小红书实采笔记，优先采用笔记里出现的具体店名、街区与玩法，让行程更真实；点赞数是热度不是评分，禁止写「评分高/口碑好」。
 - 严格禁止编造经纬度、门牌号、评分、星级、票价与官方开放时间。
 - 不要输出解释文字或 Markdown 围栏。`
 
-const GUIDE_SPOTS_SYSTEM = `你是资深旅行编辑，负责为旅游指南撰写「地点图册」的图文卡文案。每张卡会配上地图定位图，因此文字要有实地信息量。
+const GUIDE_SPOTS_SYSTEM = `你是资深旅行编辑，为旅游指南撰写「地点图册」的图文卡文案。每张卡会配地图链接和相关的真实小红书笔记，所以你的文字要短、具体、不重复笔记内容。
 只输出一个 JSON 对象，结构为：
 {"spots":[{"name":"地点名","category":"类型","day":"第N天","time":"建议时段","stay":"建议停留","intro":"详细介绍","highlights":["亮点"],"tips":"实用贴士","photo":"观景或拍照建议","cost":"费用参考"}]}
 要求：
-- 只为本次指定的地点生成，每个地点恰好 1 条，数量与顺序必须与给定列表完全一致；name 必须与给定地点名逐字一致，用于和地图定位数据匹配。
-- category 从「景点 / 街区 / 餐饮 / 住宿 / 自然 / 人文 / 交通」中选一个。
-- day 使用「第N天」，time 使用「上午 / 下午 / 傍晚 / 晚上」之一，需与已生成行程里该地点的安排一致。
-- intro 用 80–140 字写清历史或特色、最值得看的部分、怎么逛更顺，不要写空话套话；highlights 给 2–3 条具体亮点。
-- tips、photo 各写一条具体可执行建议；cost 不确定时写「以现场公示为准」。
-- 严格禁止编造经纬度、门牌号、评分、星级、网友评价、地铁线路号与精确票价；位置细节只能引用用户消息里给出的地图定位数据。
+- 只为本次指定的地点生成，每个地点恰好 1 条，数量与顺序必须与给定列表完全一致；name 必须与给定地点名逐字一致。
+- category 从「景点 / 街区 / 餐饮 / 住宿 / 自然 / 人文 / 交通」中选一个；day 用「第N天」，time 用「上午 / 下午 / 傍晚 / 晚上」之一。
+- intro 用 50–90 字写清这个地点最值得看的 1–2 个点和怎么逛更顺，简洁到位、不要空话；highlights 给 2–3 条具体亮点（每条一句话）。
+- tips、photo 各一句话的具体建议；cost 不确定时写「以现场公示为准」。
+- 严格禁止编造经纬度、门牌号、评分、星级、网友评价、地铁线路号与精确票价；位置细节只能引用用户消息里的地图数据。
 - 全部使用中文；不要输出解释文字或 Markdown 围栏。`
 
 const guideMetaSchema = travelGuideSchema.omit({ days: true, spots: true })
@@ -164,7 +161,7 @@ export async function generateGuide(
         { role: 'system', content: GUIDE_META_SYSTEM },
         {
           role: 'user',
-          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.research ? `\n\n${context.research}` : ''}${context.evidence ? `\n\n${context.evidence}` : ''}${context.geo ? `\n\n${context.geo}` : ''}`,
+          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.research ? `\n\n${context.research}` : ''}${context.geo ? `\n\n${context.geo}` : ''}`,
         },
       ],
       temperature: 0.7,
@@ -199,10 +196,7 @@ export async function generateGuide(
               `可安排的地点：${places.join('、') || '按需求自行安排'}。` +
               (days.length ? `\n已生成的前序行程主题：${days.map((d) => `${d.day} ${d.title}`).join('；')}，请保持连贯且避免重复。` : '') +
               (context.research
-                ? '\n\n【用户实采线索参考】可采纳线索里的具体店名、街区与玩法让行程更真实，但点赞数是热度不是评分，禁止写「评分高/口碑好」；不得虚构未列出的店名，票价与营业时间提示用户回源核实。'
-                : '') +
-              (context.evidence
-                ? '\n\n【口碑数据约束】每日行程里只能引用证据中给出的评分与来源，禁止编造评分、星级或「网友评价」；无数据的地点不要写任何口碑描述。'
+                ? '\n\n【用户实采笔记参考】可采纳笔记里的具体店名、街区与玩法让行程更真实，但点赞数是热度不是评分，禁止写「评分高/口碑好」；不得虚构未列出的店名，票价与营业时间提示用户回源核实；文字按短句清单写，不要展开成长段落。'
                 : '') +
               (context.geo ? `\n\n${context.geo}` : ''),
           },
@@ -254,8 +248,7 @@ export async function generateGuide(
               `本次只为以下 ${batch.length} 个地点撰写图文卡，每个恰好 1 条，顺序与名称保持一致：\n` +
               batch.map((name, i) => `${i + 1}. ${name}`).join('\n') +
               (context.geo ? `\n\n${context.geo}` : '') +
-              (context.research ? '\n\n【用户实采线索】可参考线索里的地点描述，但不得写评分、星级或把点赞数当口碑；位置细节只引用地图定位数据。' : '') +
-              (context.evidence ? '\n\n【口碑数据约束】禁止编造评分、星级与「网友评价」；图册里不写口碑分数。' : ''),
+              (context.research ? '\n\n【用户实采笔记】可参考笔记里的地点描述与玩法，但不得写评分、星级或把点赞数当口碑；位置细节只引用地图数据；每张卡会另配相关笔记图片，你的文案不要重复图片内容。' : ''),
           },
         ],
         temperature: 0.6,

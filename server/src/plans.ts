@@ -8,7 +8,7 @@ import { getConfig, getDefaultConfig, type LLMConfigRecord } from './llm'
 import { generateGuide, generateOptions, type GenerationEmit } from './generation'
 import { renderGuideHtml } from './html'
 import { newId } from './crypto'
-import { collectEvidence, evidencePrompt } from './evidence'
+import { collectEvidence } from './evidence'
 import { collectGeo, geoPrompt, withStaticImages } from './geo'
 import { researchBundle, researchPrompt } from './xhs-research'
 import type { ApiResult, EvidenceBundle, FileView, GenerationEvent, GeoBundle, PlanOption, PlanView, ResearchBundle, TravelGuide } from '../../shared/types'
@@ -137,7 +137,6 @@ async function buildGuide(userId: string, planId: string, emit: GenerationEmit):
   if (!config) throw new Error('原模型配置已被删除，无法继续生成')
   const options = JSON.parse(plan.options_json) as PlanOption[]
   const selected = options[plan.selected_index]
-  const bundle = plan.evidence_json ? (JSON.parse(plan.evidence_json) as EvidenceBundle) : null
   const geo = plan.geo_json ? (JSON.parse(plan.geo_json) as GeoBundle) : null
   // 用规划生成时的线索快照，历史记录可复现，不受之后新增/删除线索影响
   const research = plan.research_json ? (JSON.parse(plan.research_json) as ResearchBundle) : null
@@ -149,7 +148,7 @@ async function buildGuide(userId: string, planId: string, emit: GenerationEmit):
     })
   }
   const guide = await generateGuide(config, plan.requirement, selected, plan.model, emit, {
-    evidence: evidencePrompt(bundle),
+    // 第三方口碑评分来源混乱、多数未取到：不再注入模型，指南不写任何评分
     geo: geoPrompt(geo),
     research: researchPrompt(research),
     places: geo?.pois.map((poi) => poi.name) ?? [],
@@ -304,10 +303,10 @@ plansRouter.post('/plans/:id/export', requireAuth, wrap(async (req, res) => {
     return
   }
   const guide = JSON.parse(plan.guide_json) as TravelGuide
-  const bundle = plan.evidence_json ? (JSON.parse(plan.evidence_json) as EvidenceBundle) : null
   const geo = plan.geo_json ? (JSON.parse(plan.geo_json) as GeoBundle) : null
+  const research = plan.research_json ? (JSON.parse(plan.research_json) as ResearchBundle) : null
   // 静态地图只在导出时实时取用并内嵌，不写入数据库，也不会把密钥带进 HTML
-  const html = renderGuideHtml(guide, plan.requirement, bundle, await withStaticImages(geo))
+  const html = renderGuideHtml(guide, plan.requirement, await withStaticImages(geo), research)
   const fileName = `${newId()}.html`
   const filePath = path.join(filesDir, fileName)
   fs.writeFileSync(filePath, html, 'utf8')

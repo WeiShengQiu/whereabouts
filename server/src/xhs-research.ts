@@ -36,6 +36,23 @@ function safeNoteUrl(raw: string): string | null {
   }
 }
 
+/**
+ * 封面图只放行小红书官方 CDN 的 https 图片，避免把任意外链/脚本伪装的 URL 写进线索。
+ * 只保存 URL，不下载、不缓存图片本体（版权与官方条款考虑）。
+ */
+function safeCoverUrl(raw: string): string {
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'https:') return ''
+    const host = url.hostname.toLowerCase()
+    if (host !== 'xhscdn.com' && !host.endsWith('.xhscdn.com')) return ''
+    return url.toString().slice(0, 1200)
+  } catch {
+    return ''
+  }
+}
+
 const QUERY_SYSTEM = `你是旅行规划助手。根据用户旅行需求，输出四类是小红书检索关键词，用于用户在小红书搜索真实笔记。
 只输出一个 JSON 对象，结构为：
 {"queries":[{"category":"hotel","keyword":"关键词"},{"category":"transport","keyword":"关键词"},{"category":"food","keyword":"关键词"},{"category":"attraction","keyword":"关键词"}]}
@@ -120,6 +137,7 @@ interface ResearchRow {
   author: string
   summary: string
   likes: number | null
+  cover: string
   url: string
   collected_at: string
   created_at: string
@@ -134,6 +152,7 @@ function toItem(row: ResearchRow): ResearchItem {
     author: row.author,
     summary: row.summary,
     likes: row.likes,
+    cover: row.cover ?? '',
     url: row.url,
     collectedAt: row.collected_at,
   })
@@ -167,7 +186,7 @@ export function importResearch(
     loggedIn?: boolean
     extensionVersion?: string
     collectedAt?: string
-    items: Array<{ title?: string; author?: string; likes?: number | null; summary?: string; link?: string }>
+    items: Array<{ title?: string; author?: string; likes?: number | null; summary?: string; cover?: string; link?: string }>
   },
 ): { imported: number; skipped: number; reason?: string } {
   if (!payload.loginChecked || !payload.loggedIn) {
@@ -178,8 +197,8 @@ export function importResearch(
   const collectedAt = payload.collectedAt || new Date().toISOString()
   const insert = db.prepare(
     `INSERT OR IGNORE INTO xhs_research
-      (id, user_id, category, keyword, title, author, summary, likes, url, collected_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, user_id, category, keyword, title, author, summary, likes, cover, url, collected_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const raw of payload.items) {
     const url = safeNoteUrl(raw.link ?? '')
@@ -191,7 +210,7 @@ export function importResearch(
       (raw.title ?? '').trim().slice(0, 200),
       (raw.author ?? '').trim().slice(0, 80),
       (raw.summary ?? '').trim().slice(0, 500),
-      likes, url, collectedAt, new Date().toISOString(),
+      likes, safeCoverUrl(raw.cover ?? ''), url, collectedAt, new Date().toISOString(),
     )
     if (result.changes > 0) imported++
     else skipped++ // 同一用户重复链接，唯一索引拦截

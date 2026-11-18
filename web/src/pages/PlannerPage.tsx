@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, downloadUrl, errorMessage, GenerationError } from '../api'
 import GenerationPanel from '../components/GenerationPanel'
-import EvidenceMatrix from '../components/EvidenceMatrix'
 import ResearchPanel from '../components/ResearchPanel'
+import XhsNotesGallery from '../components/XhsNotesGallery'
 import { runAutoResearch } from '../xhsBridge'
 import {
   fallbackGeoPoi,
@@ -11,6 +11,7 @@ import {
   renderRouteMap,
   renderSpotMapCard,
 } from '../../../shared/geo-view'
+import { heatLabel, matchNotes, safeCover } from '../../../shared/research-view'
 import type { FileView, GenerationEvent, LLMConfigView, ModelInfo, PlanView } from '../../../shared/types'
 
 type Busy = 'options' | 'select' | 'guide' | 'export' | null
@@ -292,7 +293,8 @@ export default function PlannerPage() {
         </div>
       )}
 
-      {plan?.options && <EvidenceMatrix bundle={plan.evidence} />}
+      {/* 口碑评分来源混乱、多数未取到；指南只贴用户实采的小红书具体笔记 */}
+      {plan && <XhsNotesGallery research={plan.research} />}
 
       {plan && plan.selectedIndex !== null && !plan.guide && (
         <div className="card">
@@ -300,7 +302,7 @@ export default function PlannerPage() {
             <h2>生成完整指南</h2>
             <span className="card-index">03 / 打磨</span>
           </div>
-          <p className="sub">分块输出详细每日行程、地点图文卡、预算与行前清单；地图定位与口碑数据由系统取证后注入</p>
+          <p className="sub">分块输出每日行程、地点图文卡与真实小红书笔记；地图只提供官方定位链接，不编造评分</p>
           <button className="btn primary" onClick={() => void generateGuide()} disabled={busy !== null}>
             {busy === 'guide' ? '正在优化生成指南…' : '生成旅游指南'}
           </button>
@@ -348,6 +350,7 @@ export default function PlannerPage() {
             <div className="spot-grid">
               {spots.map((spot, index) => {
                 const poi = matchGeoPoi(plan.geo, spot.name) ?? fallbackGeoPoi(spot.name, plan.geo?.city ?? '')
+                const relatedNotes = matchNotes(plan.research?.items ?? [], spot.name, spot.category, 2)
                 return (
                   <article className="spot" key={`spot-${index}`}>
                     <div dangerouslySetInnerHTML={{ __html: renderSpotMapCard(poi, index) }} />
@@ -362,6 +365,23 @@ export default function PlannerPage() {
                       )}
                       <p className="spot-extra"><b>贴士</b>{spot.tips}</p>
                       <p className="spot-extra"><b>取景</b>{spot.photo}</p>
+                      {relatedNotes.length > 0 && (
+                        <div className="spot-notes">
+                          <p className="spot-notes-title">相关小红书笔记（用户实采 · 非评分）</p>
+                          {relatedNotes.map((note) => {
+                            const cover = safeCover(note.cover)
+                            return (
+                              <a className="spot-note" href={note.url} target="_blank" rel="noopener noreferrer" key={note.id}>
+                                {cover && <img src={cover} alt="" loading="lazy" />}
+                                <span className="spot-note-text">
+                                  <b>{note.title || '（无标题笔记）'}</b>
+                                  <small>{note.author ? `@${note.author}` : '小红书笔记'}{heatLabel(note.likes) ? ` · ${heatLabel(note.likes)}` : ''} ↗</small>
+                                </span>
+                              </a>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   </article>
                 )
@@ -378,7 +398,7 @@ export default function PlannerPage() {
             <div><h3 className="section-title">注意事项</h3>{plan.guide.notes.map((item, index) => <p className="muted" key={`note-${index}`}>· {item}</p>)}</div>
           </div>
           <div className="sep" />
-          <p className="sub">导出的单文件 HTML 内含完整图文卡、定位深链与口碑来源表，可直接打印为 PDF；若已开启地图 Key，会内嵌官方静态地图截图。</p>
+          <p className="sub">导出的单文件 HTML 内含完整图文卡、真实小红书笔记与地图深链，可直接打印为 PDF；仅在拿到官方静态地图截图时才内嵌图片，否则只保留定位链接。</p>
           <button className="btn primary" onClick={() => void exportHtml()} disabled={busy !== null}>
             {busy === 'export' ? '正在生成 HTML…' : '导出 HTML 指南'}
           </button>

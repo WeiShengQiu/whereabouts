@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS xhs_research (
   author        TEXT NOT NULL DEFAULT '',
   summary       TEXT NOT NULL DEFAULT '',
   likes         INTEGER,
+  cover         TEXT NOT NULL DEFAULT '',
   url           TEXT NOT NULL,
   collected_at  TEXT NOT NULL,
   created_at    TEXT NOT NULL
@@ -123,4 +124,10 @@ for (const column of ['evidence_json', 'geo_json', 'research_json']) {
   if (!planColumns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE plans ADD COLUMN ${column} TEXT`)
   }
+}
+
+// 实采线索新增封面图（笔记缩略图）；旧库补列，缺省空字符串不影响历史数据
+const researchColumns = db.prepare('PRAGMA table_info(xhs_research)').all() as Array<{ name: string }>
+if (!researchColumns.some((item) => item.name === 'cover')) {
+  db.exec("ALTER TABLE xhs_research ADD COLUMN cover TEXT NOT NULL DEFAULT ''")
 }

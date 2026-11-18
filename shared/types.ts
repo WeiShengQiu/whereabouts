@@ -351,6 +351,8 @@ export const researchItemSchema = z.object({
   author: z.string().trim().max(80).default(''),
   summary: z.string().trim().max(500).default(''),
   likes: z.number().int().min(0).nullable().default(null),
+  /** 笔记封面图 URL（小红书 CDN，仅作缩略图引用，不落图片本体） */
+  cover: z.string().trim().max(1200).default(''),
   url: z.string().trim().max(600),
   collectedAt: z.string().max(40).default(''),
 })
@@ -372,6 +374,7 @@ export const researchImportSchema = z.object({
       author: z.string().optional().default(''),
       likes: z.number().nullable().optional().default(null),
       summary: z.string().optional().default(''),
+      cover: z.string().optional().default(''),
       link: z.string().optional().default(''),
     })),
   }),

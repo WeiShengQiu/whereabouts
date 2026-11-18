@@ -9,9 +9,9 @@ import type { GeoBundle, GeoPoi, GeoProvider } from '../../shared/types'
  *
  * 两条能力档位：
  * 1. 零密钥（默认）：为每个地点生成高德 URI API / Google Maps URLs 官方深链，无需任何 Key；
- *    指南里的地图卡是系统绘制并明确标注的示意图，绝不伪造经纬度。
+ *    不渲染任何地图图片，只提供官方定位链接，绝不伪造经纬度或画示意图。
  * 2. 精确模式（配置 GEO_PROVIDER + Key）：调用高德 Web 服务 POI 搜索或 Google Places API，
- *    取回真实坐标与地址；静态地图图片只在导出时实时抓取并内嵌，不落库、不暴露密钥。
+ *    取回真实坐标与地址；静态地图图片只在导出时实时抓取并内嵌，拿不到就只保留链接。
  */
 interface ActiveProvider {
   id: GeoProvider
@@ -210,7 +210,7 @@ function attribution(provider: GeoProvider | null): string {
   if (provider === 'google') {
     return '坐标与地址来自 Google Places API（WGS-84）；静态地图 © Google，仅在导出时实时取用；深链为官方 Maps URLs。'
   }
-  return '未配置地图 API Key：地点卡片为系统绘制的示意图（非真实地图，不含坐标）；点击高德 / Google Maps 官方深链可查看精确位置。系统不会编造经纬度或地址。'
+  return '未配置地图 API Key：不渲染任何地图图片，地点卡片只提供高德 / Google Maps 官方深链；点击链接查看精确位置。系统不会编造经纬度、地址，也不画示意图。'
 }
 
 /** 第一阶段取证：地点名 → 官方深链（必有）+ 可选精确坐标。任何失败都不阻断生成主链路 */
@@ -374,7 +374,7 @@ function staticMapRequest(poi: GeoPoi, index: number, key: string): string {
 
 /**
  * 导出 HTML 时实时抓取静态图并转成 data URI 内嵌：文件自包含、离线可看、密钥不外泄。
- * 图片不写入数据库（官方条款普遍禁止缓存地图图片），失败就退回自绘 SVG 示意图。
+ * 图片不写入数据库（官方条款普遍禁止缓存地图图片），失败就不渲染图片，只保留官方深链。
  */
 export async function withStaticImages(geo: GeoBundle | null): Promise<GeoBundle | null> {
   if (!geo || !geo.provider || process.env.GEO_STATIC_MAP !== '1') return geo
