@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>行迹 · 小红书线索采集</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; width: 360px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #14140f; color: #ece8dc; font-size: 13px; line-height: 1.6; }
+    .hd { padding: 16px 18px 12px; border-bottom: 1px solid #2b2a24; }
+    .hd h1 { margin: 0; font-size: 15px; font-weight: 600; color: #e8c989; }
+    .hd p { margin: 4px 0 0; font-size: 11px; color: #9c988f; }
+    .bd { padding: 14px 18px 18px; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    button { flex: 1; padding: 9px 10px; border: 1px solid #3a382f; border-radius: 7px;
+      background: #1d1c17; color: #ece8dc; font-size: 12px; cursor: pointer; }
+    button.primary { background: #8a6d3b; border-color: #a8843f; color: #12120e; font-weight: 600; }
+    button:hover { border-color: #a8843f; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .status { padding: 10px 12px; border-radius: 7px; background: #1d1c17; border: 1px solid #2b2a24;
+      color: #b9b4a7; min-height: 42px; word-break: break-all; }
+    .status.ok { color: #a8d0b0; }
+    .status.err { color: #e0a08a; }
+    .list { margin-top: 12px; max-height: 220px; overflow-y: auto; }
+    .item { padding: 8px 0; border-bottom: 1px solid #2b2a24; }
+    .item a { color: #e8c989; text-decoration: none; display: block; font-size: 12px; }
+    .item .meta { color: #9c988f; font-size: 11px; margin-top: 2px; }
+    .tip { margin-top: 12px; font-size: 11px; color: #868176; }
+    code { background: #0f0f0c; padding: 1px 4px; border-radius: 3px; color: #c9b98a; }
+  </style>
+</head>
+<body>
+  <div class="hd">
+    <h1>行迹 · 小红书线索采集</h1>
+    <p>只读取你当前已登录页面可见的笔记，不发送网络请求、不读取 Cookie</p>
+  </div>
+  <div class="bd">
+    <div class="row">
+      <button id="collect" class="primary">采集当前页</button>
+      <button id="copy" disabled>复制 JSON</button>
+      <button id="download" disabled>下载 JSON</button>
+    </div>
+    <div id="status" class="status">在小红书搜索页或笔记详情页点击「采集当前页」。</div>
+    <div id="list" class="list"></div>
+    <p class="tip">采集后可复制或下载 JSON，回到行迹平台「口碑数据」页导入。<br />数据仅作人工核对线索，<b>不产生评分，不自动写入指南</b>。</p>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

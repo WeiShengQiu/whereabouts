@@ -67,6 +67,9 @@ export default function EvidencePage() {
   const [xhsLimit, setXhsLimit] = useState('8')
   const [xhsResult, setXhsResult] = useState<XhsSearchResult | null>(null)
   const [xhsBusy, setXhsBusy] = useState(false)
+  const [extJson, setExtJson] = useState('')
+  const [extItems, setExtItems] = useState<Array<{ title: string; author: string; link: string; summary: string; likes: number | null }>>([])
+  const [extNotice, setExtNotice] = useState('')
 
   const refresh = async (pois: string[] = []) => {
     const [list, sourceInfo, status] = await Promise.all([
@@ -155,6 +158,75 @@ export default function EvidencePage() {
         origin: 'manual',
       })
     }, '已存为口碑线索（仅标题与链接，不含评分）')
+  }
+
+  /** 解析「行迹 · 小红书线索采集」扩展导出的 JSON；只接受白名单域名与固定 schema */
+  interface ExtNote { title: string; author: string; link: string; summary: string; likes: number | null }
+  const parseExtensionJson = (raw: string): ExtNote[] => {
+    const parsed = JSON.parse(raw) as { schemaVersion?: number; items?: Array<Record<string, unknown>> }
+    if (!parsed || !Array.isArray(parsed.items)) throw new Error('JSON 格式不正确：缺少 items 数组')
+    const seen = new Set<string>()
+    const out: ExtNote[] = []
+    for (const it of parsed.items) {
+      const title = typeof it.title === 'string' ? it.title.trim().slice(0, 200) : ''
+      const author = typeof it.author === 'string' ? it.author.trim().slice(0, 80) : ''
+      const link = typeof it.link === 'string' ? it.link.trim() : ''
+      // 安全边界：只接受小红书官方域名的链接，其它一律丢弃
+      if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(link)) continue
+      if (seen.has(link)) continue
+      seen.add(link)
+      const likes = typeof it.likes === 'number' && Number.isFinite(it.likes) ? it.likes : null
+      const summary = typeof it.summary === 'string' ? it.summary.trim().slice(0, 500) : ''
+      if (!title && !summary && !link) continue
+      out.push({ title, author, link, summary, likes })
+    }
+    if (out.length === 0) throw new Error('没有可导入的有效笔记（需含小红书官方链接）')
+    return out
+  }
+
+  const loadExtensionJson = (raw: string) => {
+    setExtJson(raw)
+    setExtNotice('')
+    setExtItems([])
+    if (!raw.trim()) return
+    try {
+      const items = parseExtensionJson(raw)
+      setExtItems(items)
+      setExtNotice(`已解析 ${items.length} 条有效笔记，确认后导入为口碑线索。`)
+    } catch (e) {
+      setExtNotice(`解析失败：${errorMessage(e)}`)
+    }
+  }
+
+  const onExtFile = (file: File | undefined) => {
+    if (!file) return
+    void file.text().then((text) => loadExtensionJson(text))
+  }
+
+  /** 批量导入：与「存为线索」同构，只留标题/摘要/链接，不产生评分、不注入模型 */
+  const importExtensionItems = () => {
+    if (extItems.length === 0) return
+    void run(async () => {
+      for (const it of extItems) {
+        const snippetParts = [`笔记：${it.title || '（无标题）'}`]
+        if (it.author) snippetParts.push(`@${it.author}`)
+        if (it.summary) snippetParts.push(it.summary)
+        if (it.likes !== null) snippetParts.push(`赞 ${it.likes}`)
+        await api.addEvidence({
+          poiName: it.title.slice(0, 60) || '小红书笔记',
+          source: 'xiaohongshu',
+          rating: null,
+          ratingRaw: '',
+          ratingScale: null,
+          reviewCount: null,
+          url: it.link,
+          snippet: snippetParts.join(' · ').slice(0, 800),
+          origin: 'import',
+        })
+      }
+      setExtItems([])
+      setExtJson('')
+    }, `已导入 ${extItems.length} 条口碑线索（不含评分）`)
   }
 
   return (
@@ -434,6 +506,60 @@ export default function EvidencePage() {
                 <button className="btn small" disabled={busy} onClick={() => saveNoteAsLead(note)}>存为线索</button>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <h2>导入浏览器采集数据</h2>
+          <span className="card-index">07 / 扩展</span>
+        </div>
+        <p className="sub">
+          安装「行迹 · 小红书线索采集」扩展后，在你已登录的小红书页面采集笔记，导出 JSON 粘贴或上传到这里。
+          平台只接收你主动提供的数据，不代抓、不存 Cookie。
+        </p>
+        <p className="hint xhs-compliance">
+          扩展只读你当前浏览器已渲染的页面内容，不发送网络请求、不读取 Cookie、不绕过风控。导入内容仅作人工核对线索，
+          <b>不产生评分、不自动注入指南生成</b>。请自行确认对采集内容的使用符合平台条款与版权要求。
+        </p>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="ext-json">粘贴扩展导出的 JSON</label>
+          <textarea
+            id="ext-json"
+            rows={6}
+            value={extJson}
+            onChange={(e) => loadExtensionJson(e.target.value)}
+            placeholder={'{\n  "schemaVersion": 1,\n  "items": [ ... ]\n}'}
+            style={{ width: '100%', fontFamily: 'monospace', fontSize: 12 }}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 10, alignItems: 'center' }}>
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => onExtFile(e.target.files?.[0])}
+            style={{ fontSize: 12, maxWidth: 260 }}
+          />
+          <button className="btn primary" disabled={extItems.length === 0 || busy} onClick={importExtensionItems}>
+            {busy ? '导入中…' : `导入 ${extItems.length} 条线索`}
+          </button>
+        </div>
+        {extNotice && <p className={`hint ${extItems.length ? 'success' : 'ev-warn'}`} style={{ marginTop: 10 }}>{extNotice}</p>}
+        {extItems.length > 0 && (
+          <div className="xhs-notes">
+            {extItems.slice(0, 20).map((it, idx) => (
+              <div className="xhs-note" key={it.link || idx}>
+                <div className="xhs-note-main">
+                  <a href={it.link} target="_blank" rel="noopener noreferrer">{it.title || '（无标题）'}</a>
+                  <span className="xhs-note-meta">
+                    {it.author || '匿名作者'}{it.likes !== null ? ` · 赞 ${formatCount(it.likes)}` : ''}
+                    {it.summary ? ` · ${it.summary.slice(0, 40)}…` : ''}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {extItems.length > 20 && <p className="hint">仅显示前 20 条，导入将包含全部 {extItems.length} 条。</p>}
           </div>
         )}
       </div>
