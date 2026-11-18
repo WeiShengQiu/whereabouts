@@ -77,24 +77,18 @@
 
   /** 从 __INITIAL_STATE__ 里尽力取笔记数据（若版本仍保留） */
   function stateFallback(doc) {
-    const script = first(doc, ['script#__NEXT_DATA__', 'script:contains("__INITIAL_STATE__")'])
-    // querySelector 不支持 :contains，单独扫描
-    let raw = script ? script.textContent : ''
-    if (!raw) {
-      const scripts = doc.querySelectorAll ? Array.from(doc.querySelectorAll('script')) : []
-      for (const s of scripts) {
-        const t = s.textContent || ''
-        if (t.indexOf('__INITIAL_STATE__') !== -1) {
-          raw = t
-          break
-        }
-      }
+    // querySelector 不支持 :contains，必须逐个扫描 script，且必须确认内容真的含 marker
+    let raw = ''
+    const scripts = doc.querySelectorAll ? Array.from(doc.querySelectorAll('script')) : []
+    for (const s of scripts) {
+      const t = s.textContent || ''
+      if (t.indexOf('__INITIAL_STATE__') !== -1) { raw = t; break }
     }
     if (!raw) return []
-    const marker = '__INITIAL_STATE__='
-    const idx = raw.indexOf(marker)
+    // 兼容 window.__INITIAL_STATE__ = {...} 与 __INITIAL_STATE__={...} 两种写法
+    let idx = raw.indexOf('__INITIAL_STATE__')
     if (idx === -1) return []
-    let json = raw.slice(idx + marker.length).replace(/;\s*$/, '').trim()
+    let json = raw.slice(idx + '__INITIAL_STATE__'.length).replace(/^\s*=\s*/, '').replace(/;\s*$/, '').trim()
     // 截到第一个 }; 之后常被前端改写，尽量找完整对象：用括号平衡
     let depth = 0
     let end = -1
@@ -116,24 +110,42 @@
     try { state = JSON.parse(json) } catch (_) { return [] }
 
     const items = []
+    const seen = new Set()
+    let visited = 0
+    const MAX_NODES = 5000 // 防止异常大的 state 拖慢页面
     const collect = (node) => {
-      if (!node || typeof node !== 'object') return
+      if (!node || typeof node !== 'object' || visited++ > MAX_NODES) return
       if (Array.isArray(node)) { node.forEach(collect); return }
-      // 搜索结果常见结构：{ note_card: {display_title, user:{nickname}, interact_info:{liked_count}, cover:{url_default}} }
-      const card = node.note_card || node.noteCard || (node.display_title ? node : null)
-      if (card && (card.display_title || card.title)) {
-        const id = node.id || node.note_id || card.note_id || ''
-        items.push({
-          title: textFromAny(card.display_title || card.title),
-          author: textFromAny((card.user && card.user.nickname) || node.user?.nickname || ''),
-          likes: toCount(card.interact_info?.liked_count || card.liked_count || null),
-          collects: toCount(card.interact_info?.collected_count || null),
-          comments: toCount(card.interact_info?.comment_count || null),
-          cover: String(card.cover?.url_default || card.cover?.url || ''),
-          link: id ? noteUrl('/explore/' + id) : '',
-          source: 'initial_state',
-        })
+      // 搜索结果：{ note_card: {display_title, user:{nickname}, interact_info:{liked_count}, cover} }
+      // 笔记详情：{ noteDetailMap: { <id>: { note: {title, desc, user, interactInfo} } } }
+      const card = node.note_card || node.noteCard ||
+        (node.note && (node.note.title || node.note.displayTitle) ? node.note : null) ||
+        (node.display_title || node.title ? node : null)
+      if (card && (card.display_title || card.title || card.displayTitle)) {
+        const id = node.id || node.note_id || node.noteId || card.note_id || card.noteId || ''
+        const interact = card.interact_info || card.interactInfo || {}
+        const title = textFromAny(card.display_title || card.displayTitle || card.title)
+        const link = id ? noteUrl('/explore/' + id) : ''
+        const key = title + '|' + link
+        if (!seen.has(key)) {
+          seen.add(key)
+          items.push({
+            title,
+            author: textFromAny((card.user && (card.user.nickname || card.user.nickName)) || node.user?.nickname || ''),
+            likes: toCount(interact.liked_count || interact.likedCount || card.liked_count || null),
+            collects: toCount(interact.collected_count || interact.collectedCount || null),
+            comments: toCount(interact.comment_count || interact.commentCount || null),
+            cover: String((card.cover && (card.cover.url_default || card.cover.url || card.cover.urlDefault)) || ''),
+            summary: textFromAny(card.desc || card.description || '').slice(0, 500),
+            link,
+            source: 'initial_state',
+          })
+        }
+        // 已把 card 整体提取，其内部字段（user/cover/interact_info）不可能是独立笔记，停止下钻避免重复
+        return
       }
+      // 对象节点未命中，继续下钻（search.feeds[].note_card 就藏在这一层）
+      for (const value of Object.values(node)) collect(value)
     }
     collect(state.search)
     collect(state.feed)

@@ -1,4 +1,7 @@
-/* 行迹 · 小红书线索采集 —— popup 交互：发消息给 content script，展示并导出结果 */
+/* 行迹 · 小红书线索采集 —— popup 交互：在已登录页面读取 DOM，展示并导出 JSON
+ * 关键点：不依赖「扩展安装前就已打开的标签页」自动注入的 content script。
+ * popup 每次采集都主动用 scripting API 注入 parser.js，再在页面上下文调用 collect，
+ * 这样「刚装完/刚更新扩展、页面已开着」也能一次成功。全程只读 DOM，不发网络请求。 */
 (function () {
   const $ = (id) => document.getElementById(id)
   const statusEl = $('status')
@@ -42,6 +45,17 @@
     })
   }
 
+  /** 在当前标签页注入解析器并采集；注入是幂等的，重复点击不会叠加副作用 */
+  async function collectInTab(tabId) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['parser.js'] })
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => window.XhsParser.collect(document),
+    })
+    if (!results || !results[0] || !results[0].result) throw new Error('NO_RESULT')
+    return results[0].result
+  }
+
   collectBtn.addEventListener('click', async () => {
     lastPayload = null
     copyBtn.disabled = true
@@ -54,22 +68,19 @@
         setStatus('请先在浏览器中打开小红书的搜索页或笔记详情页。', 'err')
         return
       }
-      const res = await chrome.tabs.sendMessage(tab.id, { type: 'XHS_COLLECT' })
-      if (!res || !res.ok) {
-        setStatus('采集失败：' + ((res && res.error) || '未知错误'), 'err')
-        return
-      }
-      lastPayload = res.data
-      setStatus(res.data.count ? ('已采集 ' + res.data.count + ' 条笔记。' + res.data.notice) : res.data.notice,
-        res.data.count ? 'ok' : 'err')
-      render(res.data)
-      copyBtn.disabled = res.data.count === 0
-      downloadBtn.disabled = res.data.count === 0
+      const data = await collectInTab(tab.id)
+      lastPayload = data
+      setStatus(data.count ? ('已采集 ' + data.count + ' 条笔记。' + data.notice) : data.notice,
+        data.count ? 'ok' : 'err')
+      render(data)
+      copyBtn.disabled = data.count === 0
+      downloadBtn.disabled = data.count === 0
     } catch (err) {
       const msg = (err && err.message) || String(err)
-      setStatus(/Receiving end does not exist|Could not establish connection/i.test(msg)
-        ? '页面脚本未就绪，请刷新小红书页面后重试。'
-        : '采集失败：' + msg, 'err')
+      const tip = /cannot be scripted|chrome:\/\/|edge:\/\//i.test(msg)
+        ? '浏览器不允许在扩展/设置页注入脚本，请打开小红书页面后重试。'
+        : '采集失败：' + msg
+      setStatus(tip, 'err')
     }
   })
 

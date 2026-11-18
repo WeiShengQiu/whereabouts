@@ -104,6 +104,42 @@ check('parseNotePage：提取正文摘要与互动数', () => {
   assert.equal(items[0].link, 'https://www.xiaohongshu.com/explore/xyz789')
 })
 
+check('stateFallback：从 __INITIAL_STATE__ 的 search.feeds 提取（DOM 无卡片时兜底）', () => {
+  const state = {
+    search: { feeds: [
+      { id: 'feed001', note_card: {
+        display_title: '状态里的笔记', user: { nickname: '状态作者' },
+        interact_info: { liked_count: '3.2万', collected_count: '1200', comment_count: '88' },
+        cover: { url_default: 'https://xhscdn.test/s.jpg' },
+      } },
+    ] },
+  }
+  const raw = 'window.__INITIAL_STATE__=' + JSON.stringify(state) + ';'
+  const doc = {
+    location: { pathname: '/search_result', href: 'https://www.xiaohongshu.com/search_result' },
+    querySelectorAll: (s) => (s === 'script' ? [{ textContent: raw }] : []),
+    querySelector: () => null,
+  }
+  const items = P.stateFallback(doc)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].title, '状态里的笔记')
+  assert.equal(items[0].author, '状态作者')
+  assert.equal(items[0].likes, 32000)
+  assert.equal(items[0].collects, 1200)
+  assert.equal(items[0].link, 'https://www.xiaohongshu.com/explore/feed001')
+})
+
+check('stateFallback：__NEXT_DATA__ 不含 marker 时不误判（v1.1 修复）', () => {
+  const doc = {
+    querySelectorAll: () => [
+      { textContent: '{"page":"no state here"}' }, // __NEXT_DATA__ 先出现
+      { textContent: 'window.__INITIAL_STATE__={"note":{"a":1}};' },
+    ],
+  }
+  const items = P.stateFallback(doc)
+  assert.deepEqual(items, [])
+})
+
 check('dedupe：按链接去重', () => {
   const out = P.dedupe([
     { title: 'a', link: 'https://www.xiaohongshu.com/explore/1' },

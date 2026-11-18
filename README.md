@@ -184,10 +184,13 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
 
 **目录**：`tools/xhs-extension/`（MV3 扩展，纯前端）
 
-- `manifest.json`：权限仅 `activeTab` + `scripting`，`host_permissions` 只含 `https://www.xiaohongshu.com/*`。
+- `manifest.json`：权限 `activeTab` + `scripting` + `tabs`，`host_permissions` 只含 `https://www.xiaohongshu.com/*`；`content_scripts` 同时注入 `parser.js` 与 `content.js`；含一个轻量 `background.js`（仅安装提示，不联网）。
 - `parser.js`：页面解析器（纯函数），多选择器兜底 + `__INITIAL_STATE__` 兜底，输出固定 schema；同时支持浏览器与 Node，便于单测。
-- `content.js` / `popup.html` / `popup.js`：收到采集指令后只读当前 DOM，popup 提供复制 / 下载 JSON。
+- `content.js` / `popup.html` / `popup.js`：popup 采集时通过 `chrome.scripting.executeScript` **主动注入 parser 并调用**，因此「刚装完/刚更新、页面早已打开」也能一次成功，不依赖安装前注入的常驻脚本；提供复制 / 下载 JSON。
+- `background.js`：MV3 service worker，仅安装提示与扩展自检，无采集/网络逻辑。
 - `parser.test.js`：Node 内置断言单测，覆盖计数转换、域名白名单、页面识别、字段提取、去重。
+
+**v1.1 修复**：早期版本的 `content.js` 依赖 `window.XhsParser`，但 manifest 未注入 `parser.js`，导致采集必然失败；且常驻 content script 在「扩展安装前已打开的标签页」里不存在。现改为 manifest 正确注入 + popup 主动注入双保险。
 
 **安全边界**：只读用户浏览器**当前已渲染**的 DOM；不主动发任何网络请求、不读 Cookie、不模拟登录、不绕过风控、不批量轮询；链接只放行 `xiaohongshu.com` 官方域名。导入侧同样做域名白名单校验。
 
@@ -196,11 +199,21 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
 1. 浏览器打开 `chrome://extensions`（Edge 为 `edge://extensions`），开启「开发者模式」。
 2. 点「加载已解压的扩展程序」，选择本仓库的 `tools/xhs-extension/` 目录。
 3. 在小红书**先登录**，打开搜索结果页或某篇笔记详情页，点扩展图标 →「采集当前页」。
+   - 如果提示「未识别到笔记数据」：确认页面已加载出笔记卡片、你已登录；小红书改版可能导致选择器失效，需更新 `parser.js`。
+   - 如果是「请先在浏览器中打开小红书…」：当前标签页 URL 不是 `www.xiaohongshu.com`，先切到小红书页面。
 4. 复制或下载 JSON，回到平台「口碑数据」页 →「导入浏览器采集数据」，粘贴/上传后确认导入。
 
 **落地口径**：导入内容与「存为线索」同构——只留标题、作者、摘要与链接（`origin=import`、`source=xiaohongshu`、无评分），**不注入模型提示词、不写入导出的指南**。扩展采到的正文/图片只用于用户自己核对；是否以及如何对外使用采集内容，由用户自行判断是否符合平台条款与版权要求。浏览器官方商店分发需另行注册开发者账号并审核，本仓库提供的是可自托管的源码。
 
-单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖）。
+**加载前自检**（无需浏览器，确认扩展文件完整）：
+
+```bash
+node tools/xhs-extension/check.mjs
+```
+
+它会校验 manifest 合法、manifest 引用的每个文件都存在、所有 JS 语法正确、`parser.js` 确实在注入列表里——如果这里报错，浏览器加载一定失败。
+
+单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖，6 项断言）。端到端（可选，需本机 Chrome + Playwright）：在临时目录 `npm i playwright-core` 后用 CDP 加载扩展目录，在模拟小红书 DOM 上验证采集链路。
 
 ## 地图定位与图文指南
 
