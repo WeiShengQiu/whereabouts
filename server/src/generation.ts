@@ -6,13 +6,47 @@ import type { GenerationEvent, GuideDay, GuideSpot, PlanOption, TravelGuide } fr
 
 export type GenerationEmit = (event: Omit<GenerationEvent, 'elapsedMs'>) => void
 
-/** 指南生成所需的只读外部证据：口碑评分、地图定位与用户实采线索均由系统注入，模型只负责归纳 */
+/** 指南生成所需的只读外部证据：地图定位与用户实采线索均由系统注入，模型只负责归纳 */
 export interface GuideContext {
   geo?: string
   /** 用户在小红书实采的线索（非评分），仅作地点/店名/玩法参考 */
   research?: string
   /** 需要生成图文卡的地点名，来自第一阶段的 places */
   places?: string[]
+  /** 上一版指南：用户要求「在此基础上继续优化」时传入，模型只做增量改写 */
+  previousGuide?: TravelGuide
+  /** 本次优化的补充要求（原话） */
+  instruction?: string
+}
+
+const clip = (value: string, max: number): string => {
+  const text = (value ?? '').replace(/\s+/g, ' ').trim()
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/**
+ * 把上一版指南压成对照上下文。
+ * 目的：迭代优化时保留用户已经认可的结构，只改被要求的部分，避免模型整篇重写。
+ */
+function previousGuidePrompt(guide: TravelGuide, instruction = ''): string {
+  const days = (guide.days ?? []).slice(0, 10).map((day) =>
+    `${day.day} ${clip(day.title, 20)}｜上午 ${clip(day.morning, 60)}｜下午 ${clip(day.afternoon, 60)}｜晚上 ${clip(day.evening, 60)}｜餐饮 ${clip(day.meals, 40)}｜交通 ${clip(day.transport, 40)}`,
+  )
+  const spots = (guide.spots ?? []).slice(0, 12).map((spot) =>
+    `${spot.name}（${spot.category}，${spot.day}${spot.time}）：${clip(spot.intro, 60)}`,
+  )
+  return [
+    '【上一版指南 · 用户已看过，要求在此基础上继续优化】',
+    `标题：${clip(guide.title, 40)}｜目的地：${clip(guide.destination, 20)}｜时长：${clip(guide.duration, 20)}`,
+    `概述：${clip(guide.overview, 200)}`,
+    days.length ? `行程：\n${days.join('\n')}` : '',
+    spots.length ? `地点图册：\n${spots.join('\n')}` : '',
+    `预算：${clip(guide.budget.level, 20)}｜${guide.budget.items.slice(0, 6).map((item) => clip(item, 30)).join('；')}｜合计 ${clip(guide.budget.total, 20)}`,
+    guide.packing.length ? `行前清单：${guide.packing.slice(0, 6).map((item) => clip(item, 30)).join('；')}` : '',
+    guide.notes.length ? `注意事项：${guide.notes.slice(0, 6).map((item) => clip(item, 30)).join('；')}` : '',
+    instruction ? `【本次优化要求】${clip(instruction, 300)}` : '',
+    '改写规则：只调整与「本次优化要求」相关的部分，其余天次、地点、预算结构保持不变；天数与地点集合保持稳定，除非要求里明确要求增删；仍然禁止写评分、星级或「网友评价」，价格与开放时间提示回源核实；文字保持短句清单风格，不要扩写成长段落。',
+  ].filter(Boolean).join('\n')
 }
 
 const OPTIONS_SYSTEM = `你是资深旅行规划师。根据用户的需求，给出 3 个差异明显的定制方案供用户挑选。
@@ -140,6 +174,8 @@ export async function generateGuide(
     batches.push({ from, to: Math.min(from + DAYS_PER_BATCH - 1, totalDays) })
   }
   const places = [...new Set((context.places ?? []).map((item) => item.trim()).filter(Boolean))].slice(0, 8)
+  // 迭代优化：把上一版指南作为对照，只做增量改写
+  const previous = context.previousGuide ? previousGuidePrompt(context.previousGuide, context.instruction) : ''
   const spotBatches: string[][] = []
   for (let from = 0; from < places.length; from += SPOTS_PER_BATCH) {
     spotBatches.push(places.slice(from, from + SPOTS_PER_BATCH))
@@ -161,7 +197,7 @@ export async function generateGuide(
         { role: 'system', content: GUIDE_META_SYSTEM },
         {
           role: 'user',
-          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.research ? `\n\n${context.research}` : ''}${context.geo ? `\n\n${context.geo}` : ''}`,
+          content: `原始需求：${requirement}\n\n我选定的方案：${JSON.stringify(selected)}\n\n请生成指南概览部分。${context.research ? `\n\n${context.research}` : ''}${context.geo ? `\n\n${context.geo}` : ''}${previous ? `\n\n${previous}` : ''}`,
         },
       ],
       temperature: 0.7,
@@ -198,7 +234,8 @@ export async function generateGuide(
               (context.research
                 ? '\n\n【用户实采笔记参考】可采纳笔记里的具体店名、街区与玩法让行程更真实，但点赞数是热度不是评分，禁止写「评分高/口碑好」；不得虚构未列出的店名，票价与营业时间提示用户回源核实；文字按短句清单写，不要展开成长段落。'
                 : '') +
-              (context.geo ? `\n\n${context.geo}` : ''),
+              (context.geo ? `\n\n${context.geo}` : '') +
+              (previous ? `\n\n${previous}` : ''),
           },
         ],
         temperature: 0.7,
@@ -248,7 +285,8 @@ export async function generateGuide(
               `本次只为以下 ${batch.length} 个地点撰写图文卡，每个恰好 1 条，顺序与名称保持一致：\n` +
               batch.map((name, i) => `${i + 1}. ${name}`).join('\n') +
               (context.geo ? `\n\n${context.geo}` : '') +
-              (context.research ? '\n\n【用户实采笔记】可参考笔记里的地点描述与玩法，但不得写评分、星级或把点赞数当口碑；位置细节只引用地图数据；每张卡会另配相关笔记图片，你的文案不要重复图片内容。' : ''),
+              (context.research ? '\n\n【用户实采笔记】可参考笔记里的地点描述与玩法，但不得写评分、星级或把点赞数当口碑；位置细节只引用地图数据；每张卡会另配相关笔记图片，你的文案不要重复图片内容。' : '') +
+              (previous ? `\n\n${previous}` : ''),
           },
         ],
         temperature: 0.6,

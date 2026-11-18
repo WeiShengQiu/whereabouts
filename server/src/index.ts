@@ -8,6 +8,7 @@ import { authRouter } from './auth'
 import { configsRouter } from './configs'
 import { evidenceRouter } from './evidence-routes'
 import { xhsResearchRouter } from './xhs-research-routes'
+import { xhsCoverRouter } from './xhs-cover'
 import { plansRouter } from './plans'
 
 // Node 22.21+ 的内置 fetch 通过该开关读取 HTTPS_PROXY / HTTP_PROXY。
@@ -27,6 +28,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', authRouter)
 app.use('/api/configs', configsRouter)
 app.use('/api', evidenceRouter)
+app.use('/api', xhsCoverRouter)
 app.use('/api', xhsResearchRouter)
 app.use('/api', plansRouter)
 app.use('/api', (_req, res) => {

@@ -33,7 +33,7 @@ try {
 }
 
 ok('Manifest V3', manifest.manifest_version === 3)
-ok('扩展版本 1.3.0（postMessage 握手 + 自动采集）', manifest.version === '1.3.0', manifest.version)
+ok('扩展版本 1.4.0（postMessage 握手 + 自动采集 + 封面兜底）', manifest.version === '1.4.0', manifest.version)
 ok('manifest 含 action.popup', !!(manifest.action && manifest.action.default_popup))
 ok('host_permissions 仅小红书域名',
   Array.isArray(manifest.host_permissions) &&

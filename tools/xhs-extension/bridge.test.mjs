@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url'
 
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const code = fs.readFileSync(path.join(dir, 'bridge.js'), 'utf-8')
+// 版本号从源码里取，避免每次升级扩展都要改测试
+const expectedVersion = (code.match(/const VERSION = '([^']+)'/) ?? [])[1] ?? ''
 
 let failed = 0
 const ok = (name, cond, detail = '') => {
@@ -71,7 +73,7 @@ async function ask(data) {
 console.log('bridge 协议测试（跨隔离世界）：')
 
 ok('加载后主动向页面广播 STATUS', posted.some((p) => p.type === 'STATUS' && p.installed === true), JSON.stringify(posted))
-ok('STATUS 带版本号', posted.some((p) => p.type === 'STATUS' && p.version === '1.3.0'))
+ok('STATUS 带版本号', posted.some((p) => p.type === 'STATUS' && p.version === expectedVersion && expectedVersion !== ''), expectedVersion)
 
 const afterPing = await ask({ type: 'PING', requestId: 'p1' })
 ok('PING 能收到页面可见的 STATUS 回包', afterPing.some((p) => p.type === 'STATUS'), JSON.stringify(afterPing))

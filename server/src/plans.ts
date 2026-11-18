@@ -11,7 +11,7 @@ import { newId } from './crypto'
 import { collectEvidence } from './evidence'
 import { collectGeo, geoPrompt, withStaticImages } from './geo'
 import { researchBundle, researchPrompt } from './xhs-research'
-import type { ApiResult, EvidenceBundle, FileView, GenerationEvent, GeoBundle, PlanOption, PlanView, ResearchBundle, TravelGuide } from '../../shared/types'
+import type { ApiResult, EvidenceBundle, FileView, GenerationEvent, GeoBundle, PlanOption, PlanSummary, PlanView, ResearchBundle, TravelGuide } from '../../shared/types'
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>
 const wrap = (fn: AsyncHandler) => (req: Request, res: Response, next: NextFunction): void => {
@@ -30,6 +30,9 @@ interface PlanRow {
   evidence_json: string | null
   geo_json: string | null
   research_json: string | null
+  parent_plan_id: string | null
+  revision_note: string
+  revision_index: number
   created_at: string
 }
 
@@ -47,8 +50,13 @@ const createPlanSchema = z.object({
   requirement: z.string().trim().min(5, '请至少描述 5 个字的旅行需求').max(2000),
   configId: z.string().optional().default(''),
   model: z.string().optional().default(''),
+  /** 本次提问对应的采集批次；缺省时取账号最近一批线索 */
+  runId: z.string().optional().default(''),
 })
 const selectSchema = z.object({ optionIndex: z.number().int().min(0) })
+const refineSchema = z.object({
+  instruction: z.string().trim().min(2, '请写一句具体的优化要求').max(600),
+})
 
 function loadPlan(userId: string, id: string): PlanRow | null {
   return (db.prepare('SELECT * FROM plans WHERE id = ? AND user_id = ?').get(id, userId) as PlanRow | undefined) ?? null
@@ -64,6 +72,27 @@ function toPlanView(row: PlanRow): PlanView {
     evidence: row.evidence_json ? (JSON.parse(row.evidence_json) as EvidenceBundle) : null,
     geo: row.geo_json ? (JSON.parse(row.geo_json) as GeoBundle) : null,
     research: row.research_json ? (JSON.parse(row.research_json) as ResearchBundle) : null,
+    parentPlanId: row.parent_plan_id ?? null,
+    revisionNote: row.revision_note ?? '',
+    version: (row.revision_index ?? 0) + 1,
+    createdAt: row.created_at,
+  }
+}
+
+/** 提问历史列表项：只解析必要字段，避免列表接口把整份指南都传下去 */
+function toPlanSummary(row: PlanRow): PlanSummary {
+  const guide = row.guide_json ? (JSON.parse(row.guide_json) as TravelGuide) : null
+  return {
+    id: row.id,
+    requirement: row.requirement,
+    revisionNote: row.revision_note ?? '',
+    version: (row.revision_index ?? 0) + 1,
+    parentPlanId: row.parent_plan_id ?? null,
+    title: guide?.title ?? '',
+    destination: guide?.destination ?? '',
+    selectedIndex: row.selected_index,
+    hasOptions: Boolean(row.options_json),
+    hasGuide: Boolean(guide),
     createdAt: row.created_at,
   }
 }
@@ -106,8 +135,8 @@ async function createPlanWithOptions(
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, userId, sessionId, input.requirement, configId, model, new Date().toISOString())
   try {
-    // 用户实采的小红书线索：生成方案前读取快照并注入，让方案贴近真实笔记里的地点与玩法
-    const research = researchBundle(userId)
+    // 用户实采的小红书线索：优先消费本次提问对应的采集批次（避免把旧问题的线索混进来）
+    const research = researchBundle(userId, input.runId)
     if (research.items.length) {
       emit({
         type: 'stage', stage: 'research',
@@ -129,7 +158,12 @@ async function createPlanWithOptions(
   }
 }
 
-async function buildGuide(userId: string, planId: string, emit: GenerationEmit): Promise<PlanView> {
+async function buildGuide(
+  userId: string,
+  planId: string,
+  emit: GenerationEmit,
+  extra: { previousGuide?: TravelGuide; instruction?: string } = {},
+): Promise<PlanView> {
   const plan = loadPlan(userId, planId)
   if (!plan) throw new Error('规划不存在')
   if (plan.selected_index === null || !plan.options_json) throw new Error('请先选择一个定制方案')
@@ -147,14 +181,53 @@ async function buildGuide(userId: string, planId: string, emit: GenerationEmit):
       current: 0, total: 1,
     })
   }
+  if (extra.previousGuide) {
+    emit({
+      type: 'stage', stage: 'guide_meta',
+      message: `正在按「${extra.instruction ?? '补充要求'}」在上一版指南基础上改写（第 ${(plan.revision_index ?? 0) + 1} 版）`,
+      current: 0, total: 1,
+    })
+  }
   const guide = await generateGuide(config, plan.requirement, selected, plan.model, emit, {
     // 第三方口碑评分来源混乱、多数未取到：不再注入模型，指南不写任何评分
     geo: geoPrompt(geo),
     research: researchPrompt(research),
     places: geo?.pois.map((poi) => poi.name) ?? [],
+    previousGuide: extra.previousGuide,
+    instruction: extra.instruction,
   })
   db.prepare('UPDATE plans SET guide_json = ? WHERE id = ?').run(JSON.stringify(guide), plan.id)
   return toPlanView(loadPlan(userId, plan.id)!)
+}
+
+/**
+ * 在已有指南基础上继续优化：新建一版（保留上一版，形成版本链），
+ * 复用同一批地点定位与线索快照，只把「上一版指南 + 本次补充要求」交给模型改写。
+ */
+async function refinePlan(userId: string, planId: string, instruction: string, emit: GenerationEmit): Promise<PlanView> {
+  const parent = loadPlan(userId, planId)
+  if (!parent) throw new Error('规划不存在')
+  if (!parent.guide_json) throw new Error('这份规划还没有指南，先生成指南再继续优化')
+  if (parent.selected_index === null) throw new Error('请先选择一个定制方案')
+  const id = newId()
+  db.prepare(
+    `INSERT INTO plans (id, user_id, session_id, requirement, config_id, model, options_json, selected_index,
+       evidence_json, geo_json, research_json, parent_plan_id, revision_note, revision_index, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, userId, null, parent.requirement, parent.config_id, parent.model,
+    parent.options_json, parent.selected_index, parent.evidence_json, parent.geo_json, parent.research_json,
+    parent.id, instruction.slice(0, 600), (parent.revision_index ?? 0) + 1, new Date().toISOString(),
+  )
+  try {
+    return await buildGuide(userId, id, emit, {
+      previousGuide: JSON.parse(parent.guide_json) as TravelGuide,
+      instruction,
+    })
+  } catch (error) {
+    db.prepare('DELETE FROM plans WHERE id = ?').run(id)
+    throw error
+  }
 }
 
 interface StreamChannel {
@@ -211,6 +284,13 @@ plansRouter.get('/plans', requireAuth, (_req, res) => {
   const { userId } = authOf(res)
   const rows = db.prepare('SELECT * FROM plans WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').all(userId) as PlanRow[]
   res.json({ ok: true, data: rows.map(toPlanView) } satisfies ApiResult<PlanView[]>)
+})
+
+/** 提问历史：每个账号的每次提问（含后续版本）都留痕，列表只回摘要 */
+plansRouter.get('/plans/history', requireAuth, (_req, res) => {
+  const { userId } = authOf(res)
+  const rows = db.prepare('SELECT * FROM plans WHERE user_id = ? ORDER BY created_at DESC LIMIT 60').all(userId) as PlanRow[]
+  res.json({ ok: true, data: rows.map(toPlanSummary) } satisfies ApiResult<PlanSummary[]>)
 })
 
 plansRouter.get('/plans/:id', requireAuth, (req, res) => {
@@ -288,6 +368,31 @@ plansRouter.post('/plans/:id/guide/stream', requireAuth, wrap(async (req, res) =
   } finally {
     channel.close()
   }
+}))
+
+/** 在已有指南基础上继续优化（SSE）：新建一版并实时回推阶段 */
+plansRouter.post('/plans/:id/refine/stream', requireAuth, wrap(async (req, res) => {
+  const channel = openStream(res)
+  try {
+    const parsed = refineSchema.safeParse(req.body)
+    if (!parsed.success) throw new Error(parsed.error.issues[0].message)
+    channel.done(await refinePlan(authOf(res).userId, req.params.id, parsed.data.instruction, channel.emit))
+  } catch (error) {
+    channel.fail(error)
+  } finally {
+    channel.close()
+  }
+}))
+
+/** 同步版本（保留 API 契约，便于脚本调用） */
+plansRouter.post('/plans/:id/refine', requireAuth, wrap(async (req, res) => {
+  const parsed = refineSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues[0].message } satisfies ApiResult<never>)
+    return
+  }
+  const view = await refinePlan(authOf(res).userId, req.params.id, parsed.data.instruction, () => {})
+  res.json({ ok: true, data: view } satisfies ApiResult<PlanView>)
 }))
 
 /** 导出 HTML：UUID 文件名 + 落盘 + 写入文件生成记录 */

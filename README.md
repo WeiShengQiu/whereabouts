@@ -89,8 +89,9 @@ npm run dev            # 一条命令同时启动 API(8888) 与 Vite(5173)
 | POST | `/api/plans/:id/select` | 保存用户选择 |
 | POST | `/api/plans/:id/guide` | 生成完整指南（同步 JSON） |
 | POST | `/api/plans/:id/guide/stream` | 同上，分块生成 + SSE 实时事件流 |
+| POST | `/api/plans/:id/refine` `/refine/stream` | 在已有指南基础上继续优化，新建一版（版本链） |
 | POST | `/api/plans/:id/export` | 导出 HTML 并写文件记录 |
-| GET | `/api/plans` `/api/files` | 规划与文件历史 |
+| GET | `/api/plans` `/api/plans/history` `/api/files` | 规划、提问历史（摘要）与文件历史 |
 | GET | `/api/files/:id/download` | 下载 HTML |
 | GET | `/api/evidence/sources` | 数据源状态、留存条款、出网提示与 CSV 模板 |
 | GET/POST/DELETE | `/api/evidence` | 证据列表 / 手动录入 / 删除 |
@@ -99,11 +100,14 @@ npm run dev            # 一条命令同时启动 API(8888) 与 Vite(5173)
 | GET | `/api/evidence/xhs/status` | 独立笔记检索通道状态（只查本机 /health） |
 | GET | `/api/evidence/xhs/search?keyword=&limit=` | 关键词检索笔记；未启用/熔断时返回官方搜索深链 |
 | POST | `/api/xhs-research/queries` | 需求拆四类小红书检索词（实采工作流） |
-| GET | `/api/xhs-research` | 实采线索列表 |
-| POST | `/api/xhs-research/import` | 导入扩展采集 JSON（强制登录凭证） |
+| POST | `/api/xhs-research/runs` | 新开一次采集批次（= 一次提问） |
+| GET | `/api/xhs-research/summary` | 最近三批的条数概览（不回传线索正文） |
+| GET | `/api/xhs-research` | 最近一批线索（兼容旧调用，页面不再展示列表） |
+| POST | `/api/xhs-research/import` | 导入扩展采集 JSON（强制登录凭证 + 单批 ≤50 条） |
+| GET | `/api/xhs-research/cover?u=` | 封面图同源代理（小红书图床防盗链兜底） |
 | DELETE | `/api/xhs-research` `/api/xhs-research/:id` | 清空 / 删除单条实采线索 |
 
-数据表：`users` / `sessions` / `llm_configs` / `plans`（含 `evidence_json`、`geo_json`、`research_json`）/ `generated_files` / `login_attempts` / `evidence_items` / `xhs_research`。
+数据表：`users` / `sessions` / `llm_configs` / `plans`（含 `evidence_json`、`geo_json`、`research_json`、`parent_plan_id`、`revision_note`、`revision_index`）/ `generated_files` / `login_attempts` / `evidence_items` / `xhs_research`（含 `run_id`、`cover`）/ `xhs_research_runs`。
 
 ## 第三方口碑证据层
 
@@ -199,6 +203,8 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
 
 **v1.2 登录门禁**：扩展采集前只读页面 DOM 判断小红书登录态（用户头像入口 / 登录按钮 / `INITIAL_STATE.user`），未登录直接拒绝采集、不生成凭证；导出 JSON 带 `loginChecked` / `loggedIn` / `extensionVersion` 凭证，平台后端二次硬校验，无已登录凭证的导入一律 403。
 
+**v1.4 封面兜底 + 单批 30–50 条**：`parser.js` 的封面提取改为 `src → data-src → srcset → style(background-image)` 逐级兜底，并把协议相对地址 `//...` 补成 https、用 `__INITIAL_STATE__` 补齐 DOM 缺失的封面——这三处是「封面空白」的主要根因；`background.js` 单关键词上限 12 条，由前端按总量收敛到 30–50 条。
+
 **v1.3 自动采集 + 检测修复（重要）**：旧版 `bridge.js` 在 content script 的 isolated world 里写 `window.__XHS_COLLECTOR__`，**页面 JS 读不到**，所以「装了扩展仍提示未安装」。现改为 `window.postMessage` 双向握手（跨 world 唯一可靠通道），并提供 `bridge.test.mjs` 协议测试防回归。同时平台点「生成定制方案」即自动完成：检测扩展 → 检查小红书登录 → 拆四类检索词 → 后台串行打开小红书搜索页采集 → 后端导入 → 随方案快照注入模型；未装扩展/未登录只降级跳过，不阻断生成。用户只需**安装扩展 + 登录小红书各一次**。
 
 **安全边界**：只读用户浏览器**当前已渲染**的 DOM；不主动发任何网络请求、不读 Cookie、不模拟登录、不绕过风控、不批量轮询；链接只放行 `xiaohongshu.com` 官方域名。导入侧同样做域名白名单校验。
@@ -207,7 +213,7 @@ XHS_NOTES_TOKEN=<与 sidecar 完全相同的 token>
 
 1. 浏览器打开 `chrome://extensions`（Edge 为 `edge://extensions`），开启「开发者模式」。
 2. 点「加载已解压的扩展程序」，选择本仓库的 `tools/xhs-extension/` 目录。
-3. **更新过扩展代码后**：回到 `chrome://extensions` 点该扩展的「重新加载」；版本号应显示 `1.3.0`。
+3. **更新过扩展代码后**：回到 `chrome://extensions` 点该扩展的「重新加载」；版本号应显示 `1.4.0`。
 4. 在小红书**先登录一次**（后续无需再操作）。打开平台，输入需求点「生成定制方案」即自动采集并注入；进度显示在实采卡片里。
 5. 手动兜底：打开小红书搜索页 → 点扩展图标 →「采集当前页」→ 复制/下载 JSON → 在平台实采卡片展开「手动导入 JSON」粘贴导入。
    - 如果提示「未识别到笔记数据」：确认已登录、笔记已加载；小红书改版可能导致选择器失效，需更新 `parser.js`。
@@ -223,35 +229,41 @@ node tools/xhs-extension/check.mjs
 
 它会校验 manifest 合法、manifest 引用的每个文件都存在、所有 JS 语法正确、`parser.js` 确实在注入列表里——如果这里报错，浏览器加载一定失败。
 
-单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖，11 项断言）。端到端（可选，需本机 Chrome + Playwright）：在临时目录 `npm i playwright-core` 后用 CDP 加载扩展目录，在模拟小红书 DOM 上验证采集链路。
+单测：`node tools/xhs-extension/parser.test.js`（无需第三方依赖，16 项断言，含封面提取与 `__INITIAL_STATE__` 补齐）。端到端（可选，需本机 Chrome + Playwright）：在临时目录 `npm i playwright-core` 后用 CDP 加载扩展目录，在模拟小红书 DOM 上验证采集链路。
 
 ## 小红书实采研究（需求 → 检索 → 采集 → 注入模型）
 
 这是把小红书数据**真正接进行程生成**的工作流，与上一节"人工核对线索"、口碑评分证据层三者相互独立：
 
-**完整流程**（规划页 cards 顺序）：
+**完整流程**（规划页是四步向导，进度条吸顶常驻，不需要上下滑动找步骤）：
 
-1. **描述需求**：填旅行需求、选模型。
+1. **描述需求**：填旅行需求、选模型；勾选「自动采集小红书线索」后点生成即可。
 2. **小红书实采（默认自动，可关闭）**：
-   - **检查项**：平台页通过 `window.postMessage` 与扩展握手，显示「扩展已安装 / 小红书已登录」。未装扩展时给出加载指引；登录态由扩展共享存储实时同步。
-   - **自动生成检索词**：点「生成定制方案」后，把需求交给模型拆成**酒店住宿 / 交通出行 / 饮食美食 / 景点玩乐**四类关键词（模型不可用则自动降级为含目的地 City 的通用词，流程不断）。每类最多取 2 条、总计 8 条，避免对用户浏览器打扰过多。
+   - **检查项**：平台页通过 `window.postMessage` 与扩展握手，显示「扩展已安装 / 小红书已登录 / 已保留几条线索」。未装扩展时给出加载指引；登录态由扩展共享存储实时同步。
+   - **自动生成检索词**：把需求交给模型拆成**酒店住宿 / 交通出行 / 饮食美食 / 景点玩乐**四类关键词（模型不可用则降级为含目的地 City 的通用词）。每类最多取 2 条、总计 8 条。
    - **自动采集**：扩展后台在自己的浏览器里串行打开小红书搜索页（非活动标签页），只读已渲染 DOM，采完即关；**未登录时不会采集、不出凭证**，只提示登录一次。
-   - **自动导入**：每条采集结果直接POST到后端，校验 `loginChecked && loggedIn` 凭证 + 链接域名白名单 + 按 URL 去重 → 落库 `xhs_research`；界面同步显示进度与线索列表。手动粘贴 JSON 仍作为兜底保留。
-3. **生成方案 / 指南**：`createPlan` 与 `buildGuide` 读取该用户实采线索快照（`researchPrompt`），明确标注「用户实采、非评分、点赞只是热度、开放时间票价需回源核实」后注入模型；SSE 增加 `research` 阶段实时事件。线索快照写入 `plans.research_json`，历史规划可复现，不受之后增删线索影响。
+   - **自动导入**：每条采集结果直接 POST 到后端，校验 `loginChecked && loggedIn` 凭证 + 链接域名白名单 + 按 URL 去重；单次采集目标 **30–50 条**（凑够 45 条即停止打开新搜索页，后端单批硬上限 50）。
+3. **挑选方案 → 生成指南 → 导出 HTML**：向导逐步推进；每个账号**只保留最近三次提问**对应的线索（`xhs_research_runs` 批次表，创建新批次即滚动删除第 4 批及更早的线索）。已采集的线索**不在界面罗列**，只作为生成参考，具体笔记以卡片形式出现在地点图册里（封面 + 标题 + 作者 + 热度 + 回源链接）。
+4. **继续优化**：指南页可以写一句优化要求（或点常用预设），系统以当前版本为基线生成新版本，旧版本保留在「提问历史」里；版本链见 `plans.parent_plan_id` / `revision_note` / `revision_index`。
 
-**数据边界**：实采线索只有标题/作者/摘要/点赞数/链接，**没有评分**；模型只把它们当目的地、店名、街区、玩法与避坑参考，不得据此写"评分高/口碑好"，不得虚构未列出的店名，票价与营业时间一律提示回源核实。与 `evidence_items`（评分证据）分表存储，互不污染。
+**为什么不再展示线索列表**：30–50 条原始笔记堆在页面上既占空间又难读，真正有用的是"这条线索支持了行程里的哪个地点"。所以线索只做两件事：注入模型、按地点名匹配后挂到对应地点卡。
 
-**相关表 / 接口**：`xhs_research`（唯一索引 `user_id + url`）；`plans.research_json`（迁移自动补列）。
+**封面图为什么需要代理**：小红书图床对站外 `Referer` 有防盗链，直连经常 403（表现就是封面空白）。前端先以 `referrerpolicy="no-referrer"` 直连，失败自动切到 `/api/xhs-research/cover?u=` 同源代理：服务端带小红书 Referer 取图、只放行 `*.xhscdn.com` / `*.xiaohongshu.com`、校验 `content-type` 与大小、内存 LRU 缓存 30 分钟不落盘。导出 HTML 用原图地址 + `no-referrer`（离线打开不发送 Referer，可正常显示）。
+
+**数据边界**：实采线索只有标题/作者/摘要/点赞数/封面/链接，**没有评分**；模型只把它们当目的地、店名、街区、玩法与避坑参考，不得据此写"评分高/口碑好"，不得虚构未列出的店名，票价与营业时间一律提示回源核实。与 `evidence_items`（评分证据）分表存储，互不污染。
+
+**相关表 / 接口**：`xhs_research`（`run_id` 归属批次，唯一索引 `user_id + url`）、`xhs_research_runs`（批次 = 一次提问）、`plans.research_json`（生成时的线索快照）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/xhs-research/queries` | 需求拆四类检索词（模型 + 规则兜底） |
-| GET | `/api/xhs-research` | 当前用户实采线索列表 |
-| POST | `/api/xhs-research/import` | 导入扩展 JSON（强制登录凭证，未登录 403） |
-| DELETE | `/api/xhs-research/:id` | 删除单条线索 |
-| DELETE | `/api/xhs-research` | 清空全部线索 |
+| POST | `/api/xhs-research/runs` | 新开一次采集批次；创建后自动滚动清理第 4 批及更早 |
+| GET | `/api/xhs-research/summary` | 最近三批的条数概览（不回传线索正文） |
+| POST | `/api/xhs-research/import` | 导入扩展 JSON（强制登录凭证，未登录 403；单批 ≤50 条） |
+| GET | `/api/xhs-research/cover?u=` | 封面图同源代理（防盗链兜底） |
+| DELETE | `/api/xhs-research/:id` `/api/xhs-research` | 删除单条 / 清空全部线索 |
 
-**验证**：`npm run build`；后端冒烟 8 项（检索词兜底、登录门禁、白名单、去重、提示词免责、CRUD）；HTTP 层 9 项（含真实百炼生成并校验 `plan.research` 快照落库）；扩展单测 11 项 + 加载前自检。
+**验证**：`npm run build`；HTTP 层 14 项（批次上限 50、未登录 403、仅保留 3 批、summary 不含正文、封面白名单、refine 错误清理）；模拟模型全流程 16 项（方案 → 指南 → 继续优化第 2 版 → 版本链与历史摘要）；扩展单测 16 项 + 桥接协议 7 项 + 加载前自检 35 项。
 
 ## 地图定位与图文指南
 

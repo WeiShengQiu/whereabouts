@@ -20,7 +20,7 @@ import {
   researchQueriesSchema,
   researchItemSchema,
 } from '../../shared/types'
-import type { ResearchBundle, ResearchCategory, ResearchItem, ResearchQuery } from '../../shared/types'
+import type { ResearchBundle, ResearchCategory, ResearchItem, ResearchQuery, ResearchRunSummary } from '../../shared/types'
 
 /** 用户消息里的链接只放行小红书官方域名，杜绝把任意外链写进线索 */
 function safeNoteUrl(raw: string): string | null {
@@ -37,16 +37,21 @@ function safeNoteUrl(raw: string): string | null {
 }
 
 /**
- * 封面图只放行小红书官方 CDN 的 https 图片，避免把任意外链/脚本伪装的 URL 写进线索。
+ * 封面图只放行小红书官方图床的 https 图片，避免把任意外链/脚本伪装的 URL 写进线索。
  * 只保存 URL，不下载、不缓存图片本体（版权与官方条款考虑）。
+ * 兼容两种历史数据：协议相对地址（//sns-webpic...）与带协议的正常地址。
  */
 function safeCoverUrl(raw: string): string {
   if (!raw) return ''
+  let value = raw.trim()
+  if (value.startsWith('//')) value = `https:${value}`
   try {
-    const url = new URL(raw)
+    const url = new URL(value)
     if (url.protocol !== 'https:') return ''
     const host = url.hostname.toLowerCase()
-    if (host !== 'xhscdn.com' && !host.endsWith('.xhscdn.com')) return ''
+    const allowed = host === 'xhscdn.com' || host.endsWith('.xhscdn.com') ||
+      host === 'xiaohongshu.com' || host.endsWith('.xiaohongshu.com')
+    if (!allowed) return ''
     return url.toString().slice(0, 1200)
   } catch {
     return ''
@@ -131,6 +136,7 @@ export async function generateResearchQueries(
 interface ResearchRow {
   id: string
   user_id: string
+  run_id: string
   category: string
   keyword: string
   title: string
@@ -142,6 +148,21 @@ interface ResearchRow {
   collected_at: string
   created_at: string
 }
+
+interface RunRow {
+  id: string
+  user_id: string
+  requirement: string
+  item_count: number
+  created_at: string
+}
+
+/** 每个账号最多保留最近 3 次提问对应的线索，更早的滚动删除 */
+export const RESEARCH_RUN_KEEP = 3
+/** 单次采集目标区间：30–50 条，达到上限即停止追加 */
+export const RESEARCH_RUN_MAX_ITEMS = 50
+/** 自动采集的软目标：凑够 45 条就不再打开新的搜索页，保证落在 30–50 区间 */
+export const RESEARCH_RUN_TARGET = 45
 
 function toItem(row: ResearchRow): ResearchItem {
   return researchItemSchema.parse({
@@ -158,27 +179,71 @@ function toItem(row: ResearchRow): ResearchItem {
   })
 }
 
-/** 读取用户全部实采线索，按采集时间倒序 */
-export function listResearch(userId: string): ResearchItem[] {
-  const rows = db
-    .prepare('SELECT * FROM xhs_research WHERE user_id = ? ORDER BY collected_at DESC, created_at DESC LIMIT 200')
-    .all(userId) as ResearchRow[]
+/** 新建一次采集批次（对应账号的一次提问） */
+export function createRun(userId: string, requirement: string): string {
+  const id = newId()
+  db.prepare('INSERT INTO xhs_research_runs (id, user_id, requirement, item_count, created_at) VALUES (?, ?, ?, 0, ?)')
+    .run(id, userId, requirement.trim().slice(0, 200), new Date().toISOString())
+  // 新问题即意味着滚动窗口前移：立刻清掉第 4 批及更早的线索，避免只靠导入成功才清理
+  pruneRuns(userId)
+  return id
+}
+
+/** 读取批次；runId 不属于当前用户或不存在时返回 null */
+export function getRun(userId: string, runId: string): RunRow | null {
+  if (!runId) return null
+  return (db.prepare('SELECT * FROM xhs_research_runs WHERE id = ? AND user_id = ?').get(runId, userId) as RunRow | undefined) ?? null
+}
+
+export function latestRun(userId: string): RunRow | null {
+  return (db.prepare('SELECT * FROM xhs_research_runs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1')
+    .get(userId) as RunRow | undefined) ?? null
+}
+
+/** 批次列表（最近 3 个），只给数量，不把线索正文返给前端 */
+export function listRuns(userId: string): ResearchRunSummary[] {
+  const rows = db.prepare('SELECT * FROM xhs_research_runs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?')
+    .all(userId, RESEARCH_RUN_KEEP) as RunRow[]
+  return rows.map((row) => ({
+    id: row.id,
+    requirement: row.requirement,
+    itemCount: row.item_count,
+    createdAt: row.created_at,
+  }))
+}
+
+/** 读取某个批次的线索；不给 runId 时取最近一批 */
+export function listResearch(userId: string, runId = ''): ResearchItem[] {
+  const rows = runId
+    ? db.prepare('SELECT * FROM xhs_research WHERE user_id = ? AND run_id = ? ORDER BY collected_at DESC, created_at DESC LIMIT ?')
+      .all(userId, runId, RESEARCH_RUN_MAX_ITEMS) as ResearchRow[]
+    : db.prepare('SELECT * FROM xhs_research WHERE user_id = ? ORDER BY collected_at DESC, created_at DESC LIMIT ?')
+      .all(userId, RESEARCH_RUN_MAX_ITEMS) as ResearchRow[]
   return rows.map(toItem)
 }
 
-/** 生成时消费的线索快照：最多 30 条，避免 prompt 过长 */
-export function researchBundle(userId: string): ResearchBundle {
-  const items = listResearch(userId).slice(0, 30)
-  return { items, collectedAt: new Date().toISOString() }
+export function countRunItems(userId: string, runId: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM xhs_research WHERE user_id = ? AND run_id = ?')
+    .get(userId, runId) as { n: number }
+  return row.n
+}
+
+/** 生成时消费的线索快照：取本次提问的批次，最多 50 条，避免 prompt 过长 */
+export function researchBundle(userId: string, runId = ''): ResearchBundle {
+  const run = runId ? getRun(userId, runId) : latestRun(userId)
+  const items = listResearch(userId, run?.id ?? '')
+  return { items, collectedAt: new Date().toISOString(), runId: run?.id }
 }
 
 /**
  * 导入扩展采集结果。
  * 硬门禁：payload.loginChecked && payload.loggedIn 必须为 true——即扩展确认用户已登录小红书。
  * 未登录 / 未装扩展（无法产生带凭证的 JSON）的采集一律拒绝。
+ * 数量约束：单批次最多 50 条，超出部分直接丢弃（前端会自动采集 30–50 条，这里是最后一道闸）。
  */
 export function importResearch(
   userId: string,
+  runId: string,
   category: ResearchCategory,
   keyword: string,
   payload: {
@@ -188,42 +253,89 @@ export function importResearch(
     collectedAt?: string
     items: Array<{ title?: string; author?: string; likes?: number | null; summary?: string; cover?: string; link?: string }>
   },
-): { imported: number; skipped: number; reason?: string } {
+): { imported: number; skipped: number; total: number; reason?: string } {
   if (!payload.loginChecked || !payload.loggedIn) {
-    return { imported: 0, skipped: 0, reason: '采集凭证无效：请确认已安装扩展并登录小红书后重新采集' }
+    return { imported: 0, skipped: 0, total: 0, reason: '采集凭证无效：请确认已安装扩展并登录小红书后重新采集' }
+  }
+  const run = getRun(userId, runId)
+  if (!run) {
+    return { imported: 0, skipped: 0, total: 0, reason: '采集批次不存在或已过期，请重新发起本次提问' }
+  }
+  const existing = countRunItems(userId, run.id)
+  const room = Math.max(0, RESEARCH_RUN_MAX_ITEMS - existing)
+  if (room === 0) {
+    return { imported: 0, skipped: payload.items.length, total: existing, reason: undefined }
   }
   let imported = 0
   let skipped = 0
   const collectedAt = payload.collectedAt || new Date().toISOString()
+  // 同一笔记可能在不同提问里重复出现：冲突时把它移动到本次批次，
+  // 否则滚动清理会把「本次需要」的线索一起删掉。
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO xhs_research
-      (id, user_id, category, keyword, title, author, summary, likes, cover, url, collected_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO xhs_research
+      (id, user_id, run_id, category, keyword, title, author, summary, likes, cover, url, collected_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, url) DO UPDATE SET
+       run_id = excluded.run_id,
+       category = excluded.category,
+       keyword = excluded.keyword,
+       title = excluded.title,
+       author = excluded.author,
+       summary = excluded.summary,
+       likes = excluded.likes,
+       cover = excluded.cover,
+       collected_at = excluded.collected_at`,
   )
   for (const raw of payload.items) {
+    if (imported >= room) { skipped++; continue }
     const url = safeNoteUrl(raw.link ?? '')
     if (!url) { skipped++; continue }
     const likes = typeof raw.likes === 'number' && Number.isFinite(raw.likes) && raw.likes >= 0
       ? Math.floor(raw.likes) : null
     const result = insert.run(
-      newId(), userId, category, keyword.slice(0, 80),
+      newId(), userId, run.id, category, keyword.slice(0, 80),
       (raw.title ?? '').trim().slice(0, 200),
       (raw.author ?? '').trim().slice(0, 80),
       (raw.summary ?? '').trim().slice(0, 500),
       likes, safeCoverUrl(raw.cover ?? ''), url, collectedAt, new Date().toISOString(),
     )
     if (result.changes > 0) imported++
-    else skipped++ // 同一用户重复链接，唯一索引拦截
+    else skipped++
   }
-  return { imported, skipped }
+  const total = countRunItems(userId, run.id)
+  db.prepare('UPDATE xhs_research_runs SET item_count = ? WHERE id = ?').run(total, run.id)
+  pruneRuns(userId)
+  return { imported, skipped, total }
 }
 
-/** 单条删除与清空（用户可清理过期线索） */
+/**
+ * 滚动清理：只保留最近 keep 个批次（默认 3 次提问），
+ * 更早批次的线索连同批次记录一起删除，防止单个账号无限堆积。
+ */
+export function pruneRuns(userId: string, keep = RESEARCH_RUN_KEEP): number {
+  const rows = db.prepare('SELECT id FROM xhs_research_runs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC')
+    .all(userId) as Array<{ id: string }>
+  if (rows.length <= keep) {
+    // 批次未超限，但清掉无批次归属的历史孤儿线索（旧版本导入的数据）
+    return db.prepare("DELETE FROM xhs_research WHERE user_id = ? AND run_id = ''").run(userId).changes
+  }
+  const stale = rows.slice(keep).map((row) => row.id)
+  const placeholders = stale.map(() => '?').join(',')
+  const removed = db.prepare(`DELETE FROM xhs_research WHERE user_id = ? AND run_id IN (${placeholders})`)
+    .run(userId, ...stale).changes
+  db.prepare(`DELETE FROM xhs_research_runs WHERE user_id = ? AND id IN (${placeholders})`)
+    .run(userId, ...stale)
+  return removed
+}
+
+/** 单条删除（用户可手工剔除单条线索） */
 export function deleteResearch(userId: string, id: string): boolean {
   return db.prepare('DELETE FROM xhs_research WHERE id = ? AND user_id = ?').run(id, userId).changes > 0
 }
 
+/** 清空当前账号的全部线索与批次 */
 export function clearResearch(userId: string): number {
+  db.prepare('DELETE FROM xhs_research_runs WHERE user_id = ?').run(userId)
   return db.prepare('DELETE FROM xhs_research WHERE user_id = ?').run(userId).changes
 }
 

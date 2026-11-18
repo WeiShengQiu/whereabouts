@@ -169,6 +169,59 @@ check('collect：导出包带登录凭证（未登录时 loggedIn=false）', () 
   assert.ok(payload.notice.includes('尚未登录'))
 })
 
+check('normalizeImage：只放行小红书图床 https，补齐协议相对地址', () => {
+  assert.equal(P.normalizeImage('//sns-webpic-qc.xhscdn.com/a.jpg'), 'https://sns-webpic-qc.xhscdn.com/a.jpg')
+  assert.equal(P.normalizeImage('https://sns-img-qc.xhscdn.com/b.jpg'), 'https://sns-img-qc.xhscdn.com/b.jpg')
+  assert.equal(P.normalizeImage('http://sns-img-qc.xhscdn.com/c.jpg'), '')
+  assert.equal(P.normalizeImage('https://evil.com/d.jpg'), '')
+  assert.equal(P.normalizeImage('data:image/gif;base64,AAA'), '')
+})
+
+check('imageUrl：src 是占位图时改取 srcset / background-image（封面空白根因）', () => {
+  const lazy = el({ src: 'data:image/gif;base64,AAA', srcset: 'https://sns-webpic-qc.xhscdn.com/x.jpg 1x, https://sns-webpic-qc.xhscdn.com/y.jpg 2x' })
+  assert.equal(P.imageUrl(lazy), 'https://sns-webpic-qc.xhscdn.com/x.jpg')
+  const bg = el({ style: "background-image: url('//sns-img-qc.xhscdn.com/bg.jpg')" })
+  assert.equal(P.imageUrl(bg), 'https://sns-img-qc.xhscdn.com/bg.jpg')
+  assert.equal(P.imageUrl(el({ src: 'https://evil.com/z.jpg' })), '')
+})
+
+check('parseSearchPage：卡片封面取 src/srcset，并过滤外站图', () => {
+  const card = el({ class: 'note-item' }, [
+    el({ class: 'title' }, ['带封面的笔记']),
+    el({ class: 'cover', href: '/explore/cover1', src: '//sns-webpic-qc.xhscdn.com/cover1.jpg' }),
+  ])
+  const doc = {
+    location: { pathname: '/search_result', href: 'https://www.xiaohongshu.com/search_result' },
+    querySelector: (s) => (s.includes('note-item') ? card : null),
+    querySelectorAll: (s) => (s.includes('note-item') ? [card] : []),
+  }
+  const items = P.parseSearchPage(doc)
+  assert.equal(items[0].cover, 'https://sns-webpic-qc.xhscdn.com/cover1.jpg')
+})
+
+check('stateCover：cover 为对象/数组时取 url_default 或 info_list[0].url', () => {
+  assert.equal(P.stateCover({ url_default: 'https://sns-webpic-qc.xhscdn.com/o.jpg' }), 'https://sns-webpic-qc.xhscdn.com/o.jpg')
+  assert.equal(P.stateCover([{ url: 'https://sns-img-qc.xhscdn.com/arr.jpg' }]), 'https://sns-img-qc.xhscdn.com/arr.jpg')
+  assert.equal(P.stateCover({ info_list: [{ url: 'https://sns-img-qc.xhscdn.com/info.jpg' }] }), 'https://sns-img-qc.xhscdn.com/info.jpg')
+  assert.equal(P.stateCover({ url: 'https://evil.com/bad.jpg' }), '')
+})
+
+check('collect：DOM 缺封面时用 __INITIAL_STATE__ 同链接笔记补齐', () => {
+  const card = el({ class: 'note-item' }, [
+    el({ class: 'title' }, ['无封面卡片']),
+    el({ class: 'cover', href: '/explore/m1' }),
+  ])
+  const state = { search: { feeds: [{ id: 'm1', note_card: { display_title: '无封面卡片', cover: { url_default: '//sns-webpic-qc.xhscdn.com/state.jpg' } } }] } }
+  const raw = 'window.__INITIAL_STATE__=' + JSON.stringify(state) + ';'
+  const doc = {
+    location: { pathname: '/search_result', href: 'https://www.xiaohongshu.com/search_result' },
+    querySelector: (s) => (s.includes('note-item') ? card : null),
+    querySelectorAll: (s) => (s.includes('note-item') ? [card] : (s === 'script' ? [{ textContent: raw }] : [])),
+  }
+  const payload = P.collect(doc)
+  assert.equal(payload.items[0].cover, 'https://sns-webpic-qc.xhscdn.com/state.jpg')
+})
+
 check('dedupe：按链接去重', () => {
   const out = P.dedupe([
     { title: 'a', link: 'https://www.xiaohongshu.com/explore/1' },

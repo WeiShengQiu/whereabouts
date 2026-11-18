@@ -65,12 +65,16 @@ export default function HistoryPage() {
           <p className="muted">还没有规划记录</p>
         ) : (
           <table>
-            <thead><tr><th>创建时间</th><th>需求</th><th>候选方案</th><th>指南</th></tr></thead>
+            <thead><tr><th>创建时间</th><th>需求</th><th>版本</th><th>候选方案</th><th>指南</th></tr></thead>
             <tbody>
               {plans.map((plan) => (
                 <tr key={plan.id}>
                   <td>{fmt(plan.createdAt)}</td>
-                  <td>{plan.requirement.slice(0, 40)}{plan.requirement.length > 40 ? '…' : ''}</td>
+                  <td>
+                    {plan.requirement.slice(0, 40)}{plan.requirement.length > 40 ? '…' : ''}
+                    {plan.revisionNote && <div className="muted">优化：{plan.revisionNote}</div>}
+                  </td>
+                  <td>{plan.version > 1 ? `第 ${plan.version} 版` : '首版'}</td>
                   <td>{plan.options?.length ?? 0} 个{plan.selectedIndex !== null ? ` · 已选第 ${plan.selectedIndex + 1} 个` : ''}</td>
                   <td>{plan.guide ? '已生成' : '未生成'}</td>
                 </tr>

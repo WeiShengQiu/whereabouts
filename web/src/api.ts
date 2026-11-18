@@ -9,10 +9,12 @@ import type {
   LLMConfigUpdate,
   LLMConfigView,
   ModelInfo,
+  PlanSummary,
   PlanView,
   ResearchCategory,
   ResearchItem,
   ResearchQuery,
+  ResearchRunSummary,
   SessionView,
   SourceStatus,
   UserView,
@@ -127,14 +129,19 @@ export const api = {
   testConfig: (id: string, model: string) => post<{ ok: boolean; message: string }>(`/configs/${id}/test`, { model }),
 
   plans: () => request<PlanView[]>('/plans'),
-  createPlan: (requirement: string, configId: string, model: string) =>
-    post<PlanView>('/plans', { requirement, configId, model }),
-  createPlanStream: (requirement: string, configId: string, model: string, onEvent: (e: GenerationEvent) => void) =>
-    streamRequest('/plans/stream', { requirement, configId, model }, onEvent),
+  planHistory: () => request<PlanSummary[]>('/plans/history'),
+  plan: (id: string) => request<PlanView>(`/plans/${id}`),
+  createPlan: (requirement: string, configId: string, model: string, runId = '') =>
+    post<PlanView>('/plans', { requirement, configId, model, runId }),
+  createPlanStream: (requirement: string, configId: string, model: string, onEvent: (e: GenerationEvent) => void, runId = '') =>
+    streamRequest('/plans/stream', { requirement, configId, model, runId }, onEvent),
   selectOption: (id: string, optionIndex: number) => post<PlanView>(`/plans/${id}/select`, { optionIndex }),
   generateGuide: (id: string) => post<PlanView & { attempts: number }>(`/plans/${id}/guide`),
   generateGuideStream: (id: string, onEvent: (e: GenerationEvent) => void) =>
     streamRequest(`/plans/${id}/guide/stream`, {}, onEvent),
+  /** 在已有指南基础上继续优化：新建一版（版本链），上一版保留在历史里 */
+  refinePlanStream: (id: string, instruction: string, onEvent: (e: GenerationEvent) => void) =>
+    streamRequest(`/plans/${id}/refine/stream`, { instruction }, onEvent),
   exportHtml: (id: string) => post<FileView>(`/plans/${id}/export`),
   files: () => request<FileView[]>('/files'),
 
@@ -156,8 +163,12 @@ export const api = {
   researchQueries: (requirement: string, configId: string, model: string) =>
     post<{ queries: ResearchQuery[]; source: 'model' | 'rule' }>('/xhs-research/queries', { requirement, configId, model }),
   research: () => request<ResearchItem[]>('/xhs-research'),
-  importResearch: (category: ResearchCategory, keyword: string, payload: unknown) =>
-    post<{ imported: number; skipped: number; reason?: string }>('/xhs-research/import', { category, keyword, payload }),
+  researchSummary: () =>
+    request<{ runs: ResearchRunSummary[]; total: number; keep: number; latestRunId: string }>('/xhs-research/summary'),
+  /** 新开一次采集批次（一次提问 = 一批），导入时回传批次 id */
+  createResearchRun: (requirement: string) => post<{ id: string }>('/xhs-research/runs', { requirement }),
+  importResearch: (runId: string, category: ResearchCategory, keyword: string, payload: unknown) =>
+    post<{ imported: number; skipped: number; total: number; reason?: string }>('/xhs-research/import', { runId, category, keyword, payload }),
   deleteResearch: (id: string) => request<{ deleted: boolean }>(`/xhs-research/${id}`, { method: 'DELETE' }),
   clearResearch: () => request<{ deleted: number }>('/xhs-research', { method: 'DELETE' }),
 }

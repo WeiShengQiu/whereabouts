@@ -43,9 +43,14 @@ interface CollectPayload {
     author?: string
     likes?: number | null
     summary?: string
+    cover?: string
     link?: string
   }>
 }
+
+/** 单次采集目标：30–50 条，凑够软目标就不再打开新的搜索页 */
+const RUN_TARGET = 45
+const RUN_MAX = 50
 
 export interface AutoProgress {
   phase: 'detect' | 'login' | 'queries' | 'collect' | 'done'
@@ -64,6 +69,8 @@ export interface AutoResearchResult {
   imported: number
   queries: ResearchQuery[]
   loggedIn: boolean | null
+  /** 本次采集批次 id：生成方案时用它精确取这一批线索 */
+  runId?: string
 }
 
 /** 向页面自身发进度事件，ResearchPanel 无需与 PlannerPage 层层传 props */
@@ -200,13 +207,26 @@ export async function runAutoResearch(requirement: string, configId: string, mod
       return { ...empty, message, loggedIn: loginOk }
     }
 
+    // 开一批：本批线索只属于这次提问，账号最多保留最近 3 批，更早的自动滚动删除
+    let runId = ''
+    try {
+      runId = (await api.createResearchRun(requirement.trim())).id
+    } catch (_) {
+      const message = '采集批次创建失败，本次跳过实采（方案仍会正常生成）。'
+      emitProgress({ phase: 'done', message })
+      return { ...empty, reason: 'ERROR', message, queries: selected, loggedIn: loginOk }
+    }
+
     let imported = 0
+    let total = 0
     let sawLogin = false
     for (let i = 0; i < selected.length; i++) {
       const query = selected[i]
+      // 已达到 30–50 条区间的软目标：不再打开新标签页，减少对浏览器的打扰
+      if (imported >= RUN_TARGET || total >= RUN_MAX) break
       emitProgress({
         phase: 'collect',
-        message: `自动采集中 ${i + 1}/${selected.length}：${query.keyword}`,
+        message: `自动采集中 ${i + 1}/${selected.length}：${query.keyword}（已 ${imported} 条）`,
         current: i + 1,
         total: selected.length,
         keyword: query.keyword,
@@ -218,14 +238,15 @@ export async function runAutoResearch(requirement: string, configId: string, mod
         if (res.reason === 'NOT_LOGGED_IN') {
           const message = '小红书未登录，已停止后续采集。登录后再次生成方案即可自动采集。'
           emitProgress({ phase: 'done', message, imported })
-          return { ...empty, attempted: true, reason: 'NOT_LOGGED_IN', message, imported, queries: selected, loggedIn: false }
+          return { ...empty, attempted: true, reason: 'NOT_LOGGED_IN', message, imported, queries: selected, loggedIn: false, runId }
         }
         if (res.ok === true && res.data) {
-          const result = await api.importResearch(query.category, query.keyword, res.data)
+          const result = await api.importResearch(runId, query.category, query.keyword, res.data)
           imported += result.imported
+          total = result.total
           emitProgress({
             phase: 'collect',
-            message: `${query.keyword}：新增 ${result.imported} 条线索`,
+            message: `${query.keyword}：新增 ${result.imported} 条，累计 ${total} 条`,
             current: i + 1,
             total: selected.length,
             keyword: query.keyword,
@@ -238,18 +259,19 @@ export async function runAutoResearch(requirement: string, configId: string, mod
       await sleep(700)
     }
 
-    const message = imported > 0
-      ? `自动采集完成：新增 ${imported} 条小红书线索，已注入本次方案。`
+    const message = total > 0
+      ? `自动采集完成：本批共 ${total} 条小红书线索，已注入本次方案（仅作参考，非评分）。`
       : '自动采集完成但未获得可用线索，方案仍会正常生成（可登录小红书后重试）。'
     emitProgress({ phase: 'done', message, imported, total: selected.length })
     return {
       attempted: true,
-      ok: imported > 0,
-      reason: imported > 0 ? undefined : 'NO_ITEMS',
+      ok: total > 0,
+      reason: total > 0 ? undefined : 'NO_ITEMS',
       message,
-      imported,
+      imported: total,
       queries: selected,
       loggedIn: loginOk || sawLogin,
+      runId,
     }
   } catch (e) {
     const message = `自动采集失败：${e instanceof Error ? e.message : String(e)}。方案仍会正常生成。`

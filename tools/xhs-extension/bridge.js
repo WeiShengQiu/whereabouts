@@ -1,7 +1,7 @@
 /**
  * 行迹 · 小红书线索采集 —— 平台页桥接（content script）
  *
- * 关键修正（v1.3.0）：content script 运行在 Chrome 的 isolated world，
+ * 关键修正（v1.3.0 起）：content script 运行在 Chrome 的 isolated world，
  * 向 window 挂自定义属性（window.__XHS_COLLECTOR__）对网页里的 React 代码**不可见**。
  * 这正是「装了扩展仍提示未安装」的根因。跨 world 唯一可靠的通道是共享 DOM 上的
  * window.postMessage，所以本文件改为纯消息握手：
@@ -11,7 +11,7 @@
  * 不采集数据本身、不发网络请求、不读 Cookie。真正的采集由 background 在用户已登录的小红书标签页里完成。
  */
 ;(function () {
-  const VERSION = '1.3.0'
+  const VERSION = '1.4.0'
   const TAG = '__xhsBridge'
 
   const state = {

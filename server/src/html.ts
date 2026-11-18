@@ -28,7 +28,7 @@ function xhsNotesSection(research: ResearchBundle | null): string {
           const cover = safeCover(note.cover)
           const heat = heatLabel(note.likes)
           return `<a class="xhs-card" href="${esc(note.url)}" target="_blank" rel="noopener noreferrer">
-            <div class="xhs-card-cover">${cover ? `<img src="${esc(cover)}" alt="笔记封面" loading="lazy">` : '<span class="xhs-card-ph">小红书笔记</span>'}</div>
+            <div class="xhs-card-cover">${cover ? `<img src="${esc(cover)}" alt="笔记封面" loading="lazy" referrerpolicy="no-referrer">` : '<span class="xhs-card-ph">小红书笔记</span>'}</div>
             <div class="xhs-card-body"><b>${esc(note.title || '（无标题笔记）')}</b>
               <small>${esc(note.author ? `@${note.author}` : '小红书用户')}${heat ? ` · ${esc(heat)}` : ''} ↗</small>
               ${note.summary ? `<span class="xhs-card-summary">${esc(note.summary.slice(0, 60))}</span>` : ''}
@@ -50,7 +50,7 @@ function spotNotesHtml(research: ResearchBundle | null, name: string, category: 
       const cover = safeCover(note.cover)
       const heat = heatLabel(note.likes)
       return `<a class="spot-note" href="${esc(note.url)}" target="_blank" rel="noopener noreferrer">
-        ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy">` : ''}
+        ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
         <span class="spot-note-text"><b>${esc(note.title || '（无标题笔记）')}</b>
           <small>${esc(note.author ? `@${note.author}` : '小红书笔记')}${heat ? ` · ${esc(heat)}` : ''} ↗</small>
         </span>

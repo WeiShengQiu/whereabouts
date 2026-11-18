@@ -17,7 +17,7 @@
 
   const SCHEMA_VERSION = 1
   // 与 manifest.json 的 version 保持一致；导出凭证里带上，便于平台识别版本
-  const EXT_VERSION = '1.3.0'
+  const EXT_VERSION = '1.4.0'
 
   function text(el) {
     return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : ''
@@ -39,6 +39,64 @@
       }
     }
     return null
+  }
+
+  /** 规范化图片地址：只保留小红书图床的 https 绝对地址 */
+  function normalizeImage(raw) {
+    if (!raw) return ''
+    let value = String(raw).trim()
+    if (!value || value.startsWith('data:') || value.startsWith('blob:')) return ''
+    if (value.startsWith('//')) value = 'https:' + value
+    try {
+      const url = new URL(value, 'https://www.xiaohongshu.com')
+      if (url.protocol !== 'https:') return ''
+      const host = url.hostname.toLowerCase()
+      const allowed = host === 'xhscdn.com' || host.endsWith('.xhscdn.com') ||
+        host === 'xiaohongshu.com' || host.endsWith('.xiaohongshu.com')
+      if (!allowed) return ''
+      url.hash = ''
+      return url.toString()
+    } catch (_) {
+      return ''
+    }
+  }
+
+  /**
+   * 从元素上尽力取封面图：
+   * 小红书的懒加载会把真实地址放在 srcset / data-src / style background-image 上，
+   * 只读 img.src 经常拿到占位图或空值——这正是「封面没加载」的根因之一。
+   */
+  function imageUrl(el) {
+    if (!el) return ''
+    const srcset = attr(el, 'srcset') || attr(el, 'data-srcset') || ''
+    const style = attr(el, 'style') || ''
+    const bgMatch = style.match(/url\((['"]?)([^'")]+)\1\)/)
+    const candidates = [
+      attr(el, 'src'),
+      attr(el, 'data-src'),
+      srcset ? srcset.split(',')[0].trim().split(/\s+/)[0] : '',
+      bgMatch ? bgMatch[2] : '',
+    ]
+    for (const candidate of candidates) {
+      const value = normalizeImage(candidate)
+      if (value) return value
+    }
+    return ''
+  }
+
+  /** __INITIAL_STATE__ 里 cover 可能是字符串、对象或数组，逐种兜底 */
+  function stateCover(value) {
+    if (!value) return ''
+    if (typeof value === 'string') return normalizeImage(value)
+    if (Array.isArray(value)) return stateCover(value[0])
+    if (typeof value === 'object') {
+      return normalizeImage(
+        value.url_default || value.urlDefault || value.url ||
+        (value.info_list && value.info_list[0] && value.info_list[0].url) ||
+        (value.infoList && value.infoList[0] && value.infoList[0].url) || '',
+      )
+    }
+    return ''
   }
 
   /** 把可能带「万」「+」的中文计数转成数字 */
@@ -137,7 +195,7 @@
             likes: toCount(interact.liked_count || interact.likedCount || card.liked_count || null),
             collects: toCount(interact.collected_count || interact.collectedCount || null),
             comments: toCount(interact.comment_count || interact.commentCount || null),
-            cover: String((card.cover && (card.cover.url_default || card.cover.url || card.cover.urlDefault)) || ''),
+            cover: stateCover(card.cover) || stateCover(card.image_list) || stateCover(card.imageList),
             summary: textFromAny(card.desc || card.description || '').slice(0, 500),
             link,
             source: 'initial_state',
@@ -188,7 +246,8 @@
         '.interact-info .count', 'span.count',
       ], card)
       const linkEl = first(doc, ['a.cover', 'a[href*="/explore/"]', 'a[href*="/discovery/item/"]', 'a'], card)
-      const coverEl = first(doc, ['img.cover', 'img[src*="xhscdn"]', 'cover img', 'img'], card)
+      const coverEl = first(doc, ['img.cover', 'img[src*="xhscdn"]', 'img[data-src*="xhscdn"]', 'cover img', '.cover img', 'img'], card)
+      const coverBox = first(doc, ['.cover', '[class*="cover"]'], card)
       const href = linkEl ? (attr(linkEl, 'href') || '') : ''
       const idMatch = href.match(/\/(?:explore|discovery\/item)\/([a-z0-9]+)/i)
       return {
@@ -197,7 +256,7 @@
         likes: toCount(text(likeEl)),
         collects: null,
         comments: null,
-        cover: coverEl ? (attr(coverEl, 'src') || attr(coverEl, 'data-src') || '') : '',
+        cover: imageUrl(coverEl) || imageUrl(coverBox),
         link: idMatch ? noteUrl('/explore/' + idMatch[1]) : noteUrl(href),
         source: 'dom',
       }
@@ -238,7 +297,7 @@
       likes: toCount(text(likeEl)) || (fromState && fromState.likes) || null,
       collects: toCount(text(collectEl)) || (fromState && fromState.collects) || null,
       comments: toCount(text(commentEl)) || (fromState && fromState.comments) || null,
-      cover: coverEl ? (attr(coverEl, 'src') || '') : (fromState && fromState.cover) || '',
+      cover: imageUrl(coverEl) || (fromState && fromState.cover) || '',
       link: (idMatch ? noteUrl('/explore/' + idMatch[1]) : (doc.location && doc.location.href) || '') || (fromState && fromState.link) || '',
       summary: text(descEl).slice(0, 500),
       publishedAt: text(dateEl).slice(0, 40),
@@ -303,8 +362,18 @@
     const pageType = detectPageType(doc)
     const loginState = detectLogin(doc)
     let items = []
-    if (pageType === 'search') items = parseSearchPage(doc)
-    else if (pageType === 'note') items = parseNotePage(doc)
+    if (pageType === 'search') {
+      items = parseSearchPage(doc)
+      // DOM 里封面常因懒加载缺失：用 __INITIAL_STATE__ 里同链接笔记的封面补齐
+      if (items.length && items.some((item) => !item.cover)) {
+        try {
+          const byLink = new Map(
+            stateFallback(doc).filter((item) => item.link && item.cover).map((item) => [item.link, item.cover]),
+          )
+          items = items.map((item) => (item.cover ? item : { ...item, cover: byLink.get(item.link) || '' }))
+        } catch (_) { /* 补齐失败不影响主流程 */ }
+      }
+    } else if (pageType === 'note') items = parseNotePage(doc)
     else items = dedupe(stateFallback(doc))
 
     return {
@@ -339,5 +408,8 @@
     toCount,
     noteUrl,
     dedupe,
+    imageUrl,
+    normalizeImage,
+    stateCover,
   }
 })

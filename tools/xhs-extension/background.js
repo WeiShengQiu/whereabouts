@@ -1,5 +1,5 @@
 /**
- * 行迹 · 小红书线索采集 —— 后台 service worker（v1.3.0）
+ * 行迹 · 小红书线索采集 —— 后台 service worker（v1.4.0）
  *
  * 职责：
  * 1. 平台页通过 bridge 发来 CHECK_LOGIN / COLLECT_ONE；
@@ -136,8 +136,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (!payload.count) {
         sendResponse({ ok: false, reason: 'NO_ITEMS', data: payload })
       } else {
-        // 控制单条体积：搜索页取前 10 条足够做线索参考
-        sendResponse({ ok: true, data: Object.assign({}, payload, { items: payload.items.slice(0, 10) }) })
+        // 单关键词最多 12 条：前端按 30–50 条的总量控制，这里只限制单次体积
+        sendResponse({ ok: true, data: Object.assign({}, payload, { items: payload.items.slice(0, 12) }) })
       }
     } catch (err) {
       sendResponse({ ok: false, reason: 'ERROR', error: (err && err.message) || String(err) })

@@ -1,17 +1,35 @@
 import type { ResearchBundle, ResearchCategory, ResearchItem } from './types'
 
-/** 封面图只接受小红书官方 CDN 的 https 图片，避免把任意外链写进页面 */
+/**
+ * 封面图只接受小红书官方图床的 https 图片，避免把任意外链写进页面。
+ * 兼容协议相对地址（//sns-webpic...），浏览器默认会按 http 解析导致被判非法。
+ */
 export function safeCover(raw: string | null | undefined): string {
   if (!raw) return ''
+  let value = raw.trim()
+  if (value.startsWith('//')) value = `https:${value}`
   try {
-    const url = new URL(raw)
+    const url = new URL(value)
     if (url.protocol !== 'https:') return ''
     const host = url.hostname.toLowerCase()
-    if (host !== 'xhscdn.com' && !host.endsWith('.xhscdn.com')) return ''
+    const allowed = host === 'xhscdn.com' || host.endsWith('.xhscdn.com') ||
+      host === 'xiaohongshu.com' || host.endsWith('.xiaohongshu.com')
+    if (!allowed) return ''
     return url.toString().slice(0, 1200)
   } catch {
     return ''
   }
+}
+
+/**
+ * 页面展示用的封面地址：走同源后端代理。
+ * 原因：小红书图床对站外 Referer 有防盗链，直连经常 403，表现为封面空白；
+ * 代理服务端带小红书 Referer 取图并内存短缓存，前端只拿同源地址。
+ */
+export function coverSrc(raw: string | null | undefined): string {
+  const safe = safeCover(raw)
+  if (!safe) return ''
+  return `/api/xhs-research/cover?u=${encodeURIComponent(safe)}`
 }
 
 const CATEGORY_HINT: Record<string, ResearchCategory> = {

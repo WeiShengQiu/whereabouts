@@ -181,6 +181,36 @@ export interface PlanView {
   geo: GeoBundle | null
   /** 生成时消费的小红书实采线索快照，历史规划可复现 */
   research: ResearchBundle | null
+  /** 上一版规划（「在此基础上继续优化」产生的版本链），首版为 null */
+  parentPlanId: string | null
+  /** 本次优化的补充要求，首版为空字符串 */
+  revisionNote: string
+  /** 版本号，从 1 开始；每次「继续优化」+1 */
+  version: number
+  createdAt: string
+}
+
+/** 提问历史列表项：只带摘要，避免把整份指南塞进列表接口 */
+export interface PlanSummary {
+  id: string
+  requirement: string
+  revisionNote: string
+  version: number
+  parentPlanId: string | null
+  /** 指南标题（未生成时为空） */
+  title: string
+  destination: string
+  selectedIndex: number | null
+  hasOptions: boolean
+  hasGuide: boolean
+  createdAt: string
+}
+
+/** 一次采集批次：对应账号的一次提问，滚动保留最近三次 */
+export interface ResearchRunSummary {
+  id: string
+  requirement: string
+  itemCount: number
   createdAt: string
 }
 
@@ -384,6 +414,8 @@ export type ResearchImport = z.infer<typeof researchImportSchema>
 export interface ResearchBundle {
   items: ResearchItem[]
   collectedAt: string
+  /** 本次消费的采集批次（对应一次提问），历史快照可能为空 */
+  runId?: string
 }
 
 /** 平台页检测扩展安装：扩展注入的全局标记 */
