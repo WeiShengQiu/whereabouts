@@ -33,6 +33,7 @@ try {
 }
 
 ok('Manifest V3', manifest.manifest_version === 3)
+ok('扩展版本 1.3.0（postMessage 握手 + 自动采集）', manifest.version === '1.3.0', manifest.version)
 ok('manifest 含 action.popup', !!(manifest.action && manifest.action.default_popup))
 ok('host_permissions 仅小红书域名',
   Array.isArray(manifest.host_permissions) &&
@@ -110,8 +111,27 @@ try {
 try {
   const bj = read('bridge.js')
   ok('bridge 暴露 window.__XHS_COLLECTOR__ 安装标记', bj.includes('__XHS_COLLECTOR__'))
+  // v1.2 致命 bug：content script 在 isolated world 写 window 属性，页面 JS 读不到。
+  // v1.3 必须用 postMessage 握手，否则「装了扩展仍提示未安装」。
+  ok('bridge 用 postMessage 跨隔离世界握手',
+    bj.includes('window.postMessage') && bj.includes("addEventListener('message'"))
+  ok('bridge 支持 PING / CHECK_LOGIN / COLLECT_ONE',
+    bj.includes("type === 'PING'") && bj.includes("type !== 'CHECK_LOGIN' && type !== 'COLLECT_ONE'"))
 } catch (e) {
   ok('bridge.js 可读', false, e.message)
+}
+
+// 7. 后台自动采集链路（v1.3）
+try {
+  const gj = read('background.js')
+  ok('background 处理 CHECK_LOGIN / COLLECT_ONE',
+    gj.includes('XHS_CHECK_LOGIN') && gj.includes('XHS_COLLECT_ONE'))
+  ok('background 用非活动标签页 + 只读解析器采集',
+    gj.includes('chrome.tabs.create') && gj.includes('active: false') && gj.includes('parser.js'))
+  ok('background 同步登录态给平台检查项', gj.includes('xhsLastLoginState'))
+  ok('background 有 busy 锁防止并发采集', gj.includes('busy = true') && gj.includes('busy = false'))
+} catch (e) {
+  ok('background.js 可读', false, e.message)
 }
 
 console.log('\n' + (failed ? `自检未通过：${failed} 项` : '自检全部通过，可在浏览器加载 tools/xhs-extension/ 目录'))

@@ -17,7 +17,7 @@
 
   const SCHEMA_VERSION = 1
   // 与 manifest.json 的 version 保持一致；导出凭证里带上，便于平台识别版本
-  const EXT_VERSION = '1.2.0'
+  const EXT_VERSION = '1.3.0'
 
   function text(el) {
     return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : ''

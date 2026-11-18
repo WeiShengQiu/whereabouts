@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errorMessage } from '../api'
 import {
+  detectCollector,
+  onAutoProgress,
+  onAutoQueries,
+  onCollectorStatus,
+  type AutoProgress,
+} from '../xhsBridge'
+import {
   RESEARCH_CATEGORIES,
   RESEARCH_CATEGORY_LABELS,
   type ResearchCategory,
@@ -10,7 +17,7 @@ import {
 } from '../../../shared/types'
 
 interface Props {
-  /** 当前填写的旅行需求，用于生成分类检索词 */
+  /** 当前填写的旅行需求，手动重拆检索词时使用 */
   requirement: string
   configId: string
   model: string
@@ -25,22 +32,16 @@ interface CollectorState extends XhsCollectorStatus {
 const xhsDeepLink = (keyword: string): string =>
   `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}`
 
-/** 平台读取扩展注入的标记（installed/最近登录态），供「检查项」展示 */
-function readCollector(): CollectorState {
-  const marker = (window as unknown as { __XHS_COLLECTOR__?: XhsCollectorStatus }).__XHS_COLLECTOR__
-  if (!marker || !marker.installed) {
-    return { installed: false, version: '', lastLoginState: null, detected: false }
-  }
-  return {
-    installed: true,
-    version: marker.version,
-    lastLoginState: marker.lastLoginState ?? null,
-    detected: true,
-  }
+const INITIAL_COLLECTOR: CollectorState = {
+  installed: false,
+  version: '',
+  lastLoginState: null,
+  detected: false,
 }
 
 export default function ResearchPanel({ requirement, configId, model, onCountChange }: Props) {
-  const [collector, setCollector] = useState<CollectorState>(() => readCollector())
+  const [collector, setCollector] = useState<CollectorState>(INITIAL_COLLECTOR)
+  const [progress, setProgress] = useState<AutoProgress | null>(null)
   const [queries, setQueries] = useState<ResearchQuery[]>([])
   const [querySource, setQuerySource] = useState<'model' | 'rule' | ''>('')
   const [queryBusy, setQueryBusy] = useState(false)
@@ -51,12 +52,23 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
   const [noticeOk, setNoticeOk] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  const refreshCollector = useCallback(() => setCollector(readCollector()), [])
+  /** 扩展状态：先主动握手，之后订阅扩展主动广播（含另一个标签页采集后的登录态） */
+  const refreshCollector = useCallback(async () => {
+    const status = await detectCollector()
+    setCollector({ ...status, detected: status.installed })
+  }, [])
 
   useEffect(() => {
-    refreshCollector()
-    window.addEventListener('xhs-collector-status', refreshCollector)
-    return () => window.removeEventListener('xhs-collector-status', refreshCollector)
+    void refreshCollector()
+    const offStatus = onCollectorStatus((status) => {
+      setCollector((prev) => ({ ...status, detected: status.installed, lastLoginState: status.lastLoginState ?? prev.lastLoginState }))
+    })
+    const offProgress = onAutoProgress(setProgress)
+    const offQueries = onAutoQueries((list) => {
+      setQueries(list)
+      setQuerySource('model')
+    })
+    return () => { offStatus(); offProgress(); offQueries() }
   }, [refreshCollector])
 
   useEffect(() => {
@@ -93,11 +105,6 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
       setNoticeOk(false)
       return
     }
-    if (!collector.installed) {
-      setNotice('未检测到采集扩展：请先在浏览器安装并加载扩展，再执行采集。')
-      setNoticeOk(false)
-      return
-    }
     setBusy(true)
     setNotice('')
     try {
@@ -105,7 +112,6 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
       if (!parsed.loginChecked || !parsed.loggedIn) {
         setNotice('这份 JSON 没有已登录凭证：请确认已登录小红书后重新采集（未登录时扩展不会生成凭证）。')
         setNoticeOk(false)
-        setBusy(false)
         return
       }
       const keyword = queries.find((q) => q.category === activeCategory)?.keyword ?? ''
@@ -151,12 +157,14 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
   }
 
   const loginLabel = !collector.detected
-    ? '待检测（采集后同步）'
+    ? '待检测（自动采集时会检测）'
     : collector.lastLoginState === true
       ? '已登录 ✓'
       : collector.lastLoginState === false
         ? '未登录 ✕'
-        : '未检测'
+        : '将在生成时检测'
+
+  const progressPercent = progress?.total ? Math.round(((progress.current ?? 0) / progress.total) * 100) : 0
 
   return (
     <div className="card research-card">
@@ -165,8 +173,8 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
         <span className="card-index">02 / 实采</span>
       </div>
       <p className="sub">
-        先让模型把需求拆成酒店/交通/饮食/景点检索词，你用自己的浏览器和登录态在小红书采集真实笔记，
-        导入后这些线索会作为参考注入方案与指南（非评分，需回源核实）。
+        点上方「生成定制方案」后，系统会自动把需求拆成酒店/交通/饮食/景点检索词，用你自己的浏览器与登录态采集并导入，
+        线索会作为参考注入方案与指南（非评分，需回源核实）。首次只需登录一次小红书。
       </p>
 
       {/* 检查项：扩展安装 + 小红书登录 */}
@@ -179,21 +187,34 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
           <b>{collector.lastLoginState === true ? '✓' : collector.lastLoginState === false ? '✕' : '·'}</b>
           小红书{loginLabel}
         </span>
-        <button className="btn small ghost" onClick={refreshCollector}>刷新状态</button>
+        <button className="btn small ghost" onClick={() => void refreshCollector()}>刷新状态</button>
       </div>
       {!collector.installed && (
         <p className="hint ev-warn">
-          未检测到扩展：打开 <code>chrome://extensions</code> 开启开发者模式，加载仓库的 <code>tools/xhs-extension/</code> 目录。
-          安装后回到本页点「刷新状态」。
+          未检测到扩展：请在自己的 Chrome/Edge 打开 <code>chrome://extensions</code>，开启开发者模式，加载仓库的 <code>tools/xhs-extension/</code> 目录。
+          注意：WorkBuddy 右侧内置预览窗口无法加载浏览器扩展，请用系统浏览器打开本站；装好后点「刷新状态」。
         </p>
+      )}
+
+      {/* 自动采集进度 */}
+      {progress && (
+        <div className="auto-progress">
+          <div className="auto-progress-text">
+            <span>{progress.phase === 'done' ? '完成' : '自动采集'}</span>
+            <span>{progress.message}</span>
+          </div>
+          {progress.total && progress.phase === 'collect' && (
+            <div className="auto-progress-track"><i style={{ width: `${progressPercent}%` }} /></div>
+          )}
+        </div>
       )}
 
       <div className="sep" />
 
-      {/* 分类检索词 */}
+      {/* 分类检索词：自动生成的结果在这里展示，也可手动重拆 */}
       <div className="row">
-        <button className="btn" onClick={() => void genQueries()} disabled={queryBusy || busy}>
-          {queryBusy ? '正在拆解检索词…' : '按需求生成检索词'}
+        <button className="btn small ghost" onClick={() => void genQueries()} disabled={queryBusy || busy}>
+          {queryBusy ? '正在拆解…' : '重新拆解检索词'}
         </button>
         {querySource && <span className="hint">来源：{querySource === 'model' ? '模型生成' : '通用兜底'}</span>}
       </div>
@@ -216,39 +237,40 @@ export default function ResearchPanel({ requirement, configId, model, onCountCha
         </div>
       )}
 
-      <div className="sep" />
-
-      {/* 采集导入：选分类 + 粘贴 JSON */}
-      <div className="row">
-        <div className="field" style={{ flex: '0 0 160px' }}>
-          <label htmlFor="research-category">线索分类</label>
-          <select
-            id="research-category"
-            value={activeCategory}
-            onChange={(e) => setActiveCategory(e.target.value as ResearchCategory)}
-          >
-            {RESEARCH_CATEGORIES.map((category) => (
-              <option key={category} value={category}>{RESEARCH_CATEGORY_LABELS[category]}</option>
-            ))}
-          </select>
+      {/* 手动兜底：扩展不可用 / 自动采集漏了某类时，仍可粘贴 JSON 导入 */}
+      <details className="manual-import">
+        <summary>手动导入 JSON（自动采集失败时的兜底）</summary>
+        <div className="row" style={{ marginTop: 12 }}>
+          <div className="field" style={{ flex: '0 0 160px' }}>
+            <label htmlFor="research-category">线索分类</label>
+            <select
+              id="research-category"
+              value={activeCategory}
+              onChange={(e) => setActiveCategory(e.target.value as ResearchCategory)}
+            >
+              {RESEARCH_CATEGORIES.map((category) => (
+                <option key={category} value={category}>{RESEARCH_CATEGORY_LABELS[category]}</option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
-      <div className="field" style={{ marginTop: 14 }}>
-        <label htmlFor="research-json">扩展采集的 JSON（点扩展的「复制 JSON」后粘贴）</label>
-        <textarea
-          id="research-json"
-          value={rawJson}
-          onChange={(e) => setRawJson(e.target.value)}
-          placeholder={'{\n  "loginChecked": true,\n  "loggedIn": true,\n  "items": [ ... ]\n}'}
-        />
-      </div>
-      <div className="row">
-        <button className="btn primary" onClick={() => void doImport()} disabled={busy || !collector.installed}>
-          {busy ? '正在导入…' : `导入为${RESEARCH_CATEGORY_LABELS[activeCategory]}线索`}
-        </button>
-        {items.length > 0 && <button className="btn ghost" onClick={() => void clearAll()}>清空全部</button>}
-      </div>
-      {notice && <p className={`hint ${noticeOk ? 'success-text' : 'ev-warn'}`}>{notice}</p>}
+        <div className="field" style={{ marginTop: 14 }}>
+          <label htmlFor="research-json">扩展采集的 JSON（点扩展的「复制 JSON」后粘贴）</label>
+          <textarea
+            id="research-json"
+            value={rawJson}
+            onChange={(e) => setRawJson(e.target.value)}
+            placeholder={'{\n  "loginChecked": true,\n  "loggedIn": true,\n  "items": [ ... ]\n}'}
+          />
+        </div>
+        <div className="row">
+          <button className="btn small" onClick={() => void doImport()} disabled={busy}>
+            {busy ? '正在导入…' : `导入为${RESEARCH_CATEGORY_LABELS[activeCategory]}线索`}
+          </button>
+          {items.length > 0 && <button className="btn ghost small" onClick={() => void clearAll()}>清空全部</button>}
+        </div>
+        {notice && <p className={`hint ${noticeOk ? 'success-text' : 'ev-warn'}`}>{notice}</p>}
+      </details>
 
       {/* 已采集线索列表 */}
       {items.length > 0 && (

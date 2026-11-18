@@ -3,6 +3,7 @@ import { api, downloadUrl, errorMessage, GenerationError } from '../api'
 import GenerationPanel from '../components/GenerationPanel'
 import EvidenceMatrix from '../components/EvidenceMatrix'
 import ResearchPanel from '../components/ResearchPanel'
+import { runAutoResearch } from '../xhsBridge'
 import {
   fallbackGeoPoi,
   matchGeoPoi,
@@ -36,6 +37,10 @@ export default function PlannerPage() {
   const [run, setRun] = useState<RunState>(EMPTY_RUN)
   const [failure, setFailure] = useState<{ message: string; detail?: string } | null>(null)
   const [researchCount, setResearchCount] = useState(0)
+  /** 实采默认自动：用户填完需求点生成即可，扩展+登录只需要在首次准备一次 */
+  const [autoResearchEnabled, setAutoResearchEnabled] = useState(true)
+  const [autoBusy, setAutoBusy] = useState(false)
+  const [autoNotice, setAutoNotice] = useState('')
 
   const loadModels = async (id: string, defaultModel: string) => {
     try {
@@ -109,6 +114,22 @@ export default function PlannerPage() {
     if (requirement.trim().length < 5) return setError('请多描述一点旅行需求（至少 5 个字）')
     setPlan(null)
     setExported(null)
+
+    // 自动实采：拆词 → 扩展采集 → 后端导入 → 随方案快照注入模型。失败只降级、不阻断生成。
+    if (autoResearchEnabled) {
+      setAutoBusy(true)
+      setAutoNotice('')
+      try {
+        const result = await runAutoResearch(requirement.trim(), configId, model.trim())
+        setAutoNotice(result.message)
+        setResearchCount((await api.research()).length)
+      } catch (e) {
+        setAutoNotice(`自动采集跳过：${errorMessage(e)}`)
+      } finally {
+        setAutoBusy(false)
+      }
+    }
+
     await runTask(
       (onEvent) => api.createPlanStream(requirement.trim(), configId, model.trim(), onEvent),
       (result) => setPlan(result),
@@ -204,9 +225,19 @@ export default function PlannerPage() {
             placeholder="例如：11 月中旬和伴侣去成都及周边 4 天，预算 5000 元以内，喜欢小众街区和本地小吃，不想赶行程"
           />
         </div>
-        <button className="btn primary" onClick={() => void createOptions()} disabled={busy !== null}>
-          {busy === 'options' ? '正在生成候选方案…' : '生成定制方案'}
+        <label className="auto-toggle">
+          <input
+            type="checkbox"
+            checked={autoResearchEnabled}
+            onChange={(e) => setAutoResearchEnabled(e.target.checked)}
+            disabled={busy !== null || autoBusy}
+          />
+          自动生成小红书线索（需安装扩展并登录小红书，只需准备一次）
+        </label>
+        <button className="btn primary" onClick={() => void createOptions()} disabled={busy !== null || autoBusy}>
+          {autoBusy ? '正在自动采集小红书线索…' : busy === 'options' ? '正在生成候选方案…' : '生成定制方案'}
         </button>
+        {autoNotice && <p className="hint">{autoNotice}</p>}
         {researchCount > 0 && (
           <p className="hint">本次将结合你采集的 {researchCount} 条小红书线索生成方案（仅作地点与玩法参考）。</p>
         )}
